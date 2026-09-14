@@ -4,6 +4,7 @@ import json
 import math
 import random
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -51,16 +52,20 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from chat_stream import ChatCancelled, select_recent_messages
+from focus_session import FocusSession
 from llm_client import ModelUnavailable, YayanLLM
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 RUNTIME_DIR = PROJECT_DIR / "output" / "runtime"
 DESKTOP_STATE_PATH = RUNTIME_DIR / "desktop-state.json"
+FOCUS_STATE_PATH = RUNTIME_DIR / "focus-session.json"
 AUDIO_INPUT_PATH = RUNTIME_DIR / "voice-input.wav"
 AUDIO_REPLY_PATH = RUNTIME_DIR / "voice-reply.wav"
 PET_ASSET_PATH = PROJECT_DIR / "assets" / "yayan-watercolor-base.png"
@@ -257,6 +262,8 @@ def log_startup(event, **details):
 class WorkThread(QThread):
     completed = pyqtSignal(str, str)
     failed = pyqtSignal(str, str)
+    chunk = pyqtSignal(str, str)
+    cancelled = pyqtSignal(str, str)
 
     def __init__(self, client, mode, payload, context=None):
         super().__init__()
@@ -264,16 +271,27 @@ class WorkThread(QThread):
         self.mode = mode
         self.payload = payload
         self.context = context
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
 
     def run(self):
         try:
             if self.mode == "chat":
-                result = self.client.chat(self.payload, self.context)
+                result = self.client.stream_chat(
+                    self.payload,
+                    self.context,
+                    on_delta=lambda text: self.chunk.emit(self.mode, text),
+                    should_cancel=self.cancel_event.is_set,
+                )
             elif self.mode == "tts":
                 result = self.client.synthesize(self.payload, AUDIO_REPLY_PATH)
             else:
                 result = self.client.transcribe(self.payload)
             self.completed.emit(self.mode, result)
+        except ChatCancelled as error:
+            self.cancelled.emit(self.mode, error.partial_text)
         except ModelUnavailable as error:
             self.failed.emit(self.mode, str(error))
         except Exception as error:
@@ -282,6 +300,7 @@ class WorkThread(QThread):
 
 class ChatPanel(QDialog):
     send_requested = pyqtSignal(str)
+    cancel_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     voice_requested = pyqtSignal(bool)
 
@@ -297,7 +316,11 @@ class ChatPanel(QDialog):
         self.interface_font = self.make_font(14)
         self.setFont(self.interface_font)
         self.recording = False
+        self.busy = False
         self.messages = []
+        self.streaming_message = None
+        self.streaming_bubble = None
+        self.streaming_body = None
         self.rendered_bubbles = []
         self.rendered_speakers = []
         self.rendered_stages = []
@@ -376,7 +399,7 @@ class ChatPanel(QDialog):
         composer_layout.setSpacing(7)
         self.send_button = QPushButton("发送")
         self.send_button.setObjectName("chatSend")
-        self.send_button.clicked.connect(self.send)
+        self.send_button.clicked.connect(self.handle_send_button)
         composer_layout.addWidget(self.input, 1)
         composer_layout.addWidget(self.send_button)
 
@@ -455,6 +478,63 @@ class ChatPanel(QDialog):
         self.add_message_widget(message)
         QTimer.singleShot(0, self.scroll_to_bottom)
 
+    def start_streaming_message(self):
+        message = {
+            "speaker": "芽砚",
+            "text": "",
+            "is_pet": True,
+            "streaming": True,
+            "context_eligible": True,
+        }
+        if self.empty_message is not None:
+            self.message_layout.removeWidget(self.empty_message)
+            self.empty_message.hide()
+            self.empty_message.setParent(None)
+            self.empty_message.deleteLater()
+            self.empty_message = None
+        self.messages.append(message)
+        self.streaming_message = message
+        self.streaming_bubble, self.streaming_body = self.add_message_widget(message)
+        QTimer.singleShot(0, self.scroll_to_bottom)
+
+    def append_streaming_text(self, text):
+        if self.streaming_message is None:
+            return
+        self.streaming_message["text"] += str(text)
+        if self.streaming_bubble is not None:
+            self.streaming_bubble.setProperty("messageText", self.streaming_message["text"])
+            self.update_bubble_width(self.streaming_bubble, self.streaming_message["text"])
+        if self.streaming_body is not None:
+            self.streaming_body.setText(self.streaming_message["text"])
+        self.streaming_body and self.streaming_body.adjustSize()
+        QTimer.singleShot(0, self.scroll_to_bottom)
+
+    def finish_streaming_message(self, text=None, stopped=False, eligible=True):
+        if self.streaming_message is None:
+            return
+        if text is not None and text != self.streaming_message["text"]:
+            self.streaming_message["text"] = str(text)
+            if self.streaming_bubble is not None:
+                self.streaming_bubble.setProperty("messageText", self.streaming_message["text"])
+                self.update_bubble_width(self.streaming_bubble, self.streaming_message["text"])
+            if self.streaming_body is not None:
+                self.streaming_body.setText(self.streaming_message["text"])
+        self.streaming_message["streaming"] = False
+        self.streaming_message["context_eligible"] = bool(eligible)
+        if stopped and self.streaming_body is not None:
+            suffix = "\n\n（已停止）"
+            if not self.streaming_message["text"].endswith(suffix):
+                self.streaming_message["text"] += suffix
+                if self.streaming_bubble is not None:
+                    self.streaming_bubble.setProperty("messageText", self.streaming_message["text"])
+                    self.update_bubble_width(self.streaming_bubble, self.streaming_message["text"])
+                self.streaming_body.setText(self.streaming_message["text"])
+        self.streaming_message = None
+        self.streaming_bubble = None
+        self.streaming_body = None
+        self.message_view.adjustSize()
+        QTimer.singleShot(0, self.scroll_to_bottom)
+
     def render_messages(self):
         self.empty_message = QLabel("摸摸它，再慢慢说。\n想到哪里，就说到哪里。")
         self.empty_message.setObjectName("chatPresence")
@@ -499,7 +579,7 @@ class ChatPanel(QDialog):
             self.rendered_stages.append(stage)
             body_text = body_text[stage_end:].lstrip()
 
-        if body_text:
+        if body_text or message.get("streaming"):
             body = QLabel(body_text)
             body.setObjectName("messageBody")
             body.setFont(self.make_font(self.scaled_pixels(14)))
@@ -508,6 +588,8 @@ class ChatPanel(QDialog):
             body.setWordWrap(True)
             bubble_layout.addWidget(body)
             self.rendered_bodies.append(body)
+        else:
+            body = None
 
         if message["is_pet"]:
             row_layout.addWidget(bubble)
@@ -517,6 +599,7 @@ class ChatPanel(QDialog):
             row_layout.addWidget(bubble)
         self.message_layout.insertWidget(self.message_layout.count() - 1, row)
         self.message_view.adjustSize()
+        return bubble, body
 
     def update_bubble_width(self, bubble, text):
         scale = self.adaptive_scale()
@@ -538,6 +621,12 @@ class ChatPanel(QDialog):
         self.input.clear()
         self.send_requested.emit(text)
 
+    def handle_send_button(self):
+        if self.busy:
+            self.cancel_requested.emit()
+        else:
+            self.send()
+
     def set_recording(self, active):
         self.recording = active
         self.mic.setText("松开就好" if active else "按住说话")
@@ -551,10 +640,12 @@ class ChatPanel(QDialog):
             self.mic.setText("按住说话")
 
     def set_busy(self, busy):
-        self.input.setEnabled(not busy)
-        self.send_button.setEnabled(not busy)
-        self.input.setPlaceholderText("芽砚正在想……" if busy else "和芽砚说点什么……")
-        if not busy:
+        self.busy = bool(busy)
+        self.input.setEnabled(not self.busy)
+        self.send_button.setEnabled(True)
+        self.send_button.setText("停止等待" if self.busy else "发送")
+        self.input.setPlaceholderText("芽砚正在想……" if self.busy else "和芽砚说点什么……")
+        if not self.busy:
             self.input.setFocus()
 
 
@@ -745,6 +836,185 @@ class TaskPanel(QDialog):
         self.hide()
 
 
+class FocusPanel(QDialog):
+    start_requested = pyqtSignal(int)
+    pause_requested = pyqtSignal()
+    resume_requested = pyqtSignal()
+    finish_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.session_status = None
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(380, 390)
+        self.setStyleSheet(PANEL_STYLE)
+
+        shell = QFrame(self)
+        shell.setObjectName("actionPanel")
+        shell.setGeometry(8, 8, 364, 374)
+        layout = QVBoxLayout(shell)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        eyebrow = QLabel("由你开始，也随时可以停下")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("陪你专注一小段")
+        title.setObjectName("title")
+        self.task_label = QLabel("先选一个舒服的时长。")
+        self.task_label.setWordWrap(True)
+        self.status_label = QLabel("还没有开始")
+        self.status_label.setObjectName("eyebrow")
+
+        self.duration = QComboBox()
+        for minutes in (5, 12, 25, 45):
+            self.duration.addItem(f"{minutes} 分钟", minutes)
+        self.duration.addItem("自定义", None)
+        self.duration.setCurrentIndex(1)
+        self.custom_duration = QSpinBox()
+        self.custom_duration.setRange(1, 120)
+        self.custom_duration.setValue(12)
+        self.custom_duration.setSuffix(" 分钟")
+        self.custom_duration.setEnabled(False)
+        self.duration.currentIndexChanged.connect(
+            lambda: self.custom_duration.setEnabled(self.duration.currentData() is None)
+        )
+
+        self.start_button = QPushButton("开始 12 分钟")
+        self.start_button.setObjectName("primary")
+        self.start_button.clicked.connect(self.request_start)
+        self.duration.currentIndexChanged.connect(self.update_start_text)
+        self.custom_duration.valueChanged.connect(self.update_start_text)
+        self.pause_button = QPushButton("暂停")
+        self.pause_button.clicked.connect(self.toggle_pause)
+        self.pause_button.hide()
+        self.finish_button = QPushButton("提前结束")
+        self.finish_button.clicked.connect(self.finish_requested.emit)
+        self.finish_button.hide()
+        close_button = QPushButton("先收起面板")
+        close_button.setObjectName("quiet")
+        close_button.clicked.connect(self.hide)
+
+        controls = QHBoxLayout()
+        controls.addWidget(self.pause_button)
+        controls.addWidget(self.finish_button)
+
+        layout.addWidget(eyebrow)
+        layout.addWidget(title)
+        layout.addWidget(self.task_label)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.duration)
+        layout.addWidget(self.custom_duration)
+        layout.addWidget(self.start_button)
+        layout.addLayout(controls)
+        layout.addStretch()
+        layout.addWidget(close_button)
+
+    def selected_minutes(self):
+        return self.custom_duration.value() if self.duration.currentData() is None else int(self.duration.currentData())
+
+    def update_start_text(self):
+        prefix = "重新开始" if self.session_status in {FocusSession.RUNNING, FocusSession.PAUSED} else "开始"
+        self.start_button.setText(f"{prefix} {self.selected_minutes()} 分钟")
+
+    def request_start(self):
+        self.start_requested.emit(self.selected_minutes())
+
+    def toggle_pause(self):
+        if self.session_status == FocusSession.PAUSED:
+            self.resume_requested.emit()
+        else:
+            self.pause_requested.emit()
+
+    def set_session(self, session):
+        if session is None or not session.is_active:
+            self.session_status = None
+            self.status_label.setText("还没有开始")
+            self.task_label.setText("先选一个舒服的时长。")
+            self.pause_button.hide()
+            self.finish_button.hide()
+        else:
+            self.session_status = session.status
+            minutes, seconds = divmod(max(0, session.remaining_seconds), 60)
+            state_text = "暂停中" if session.status == FocusSession.PAUSED else "专注中"
+            self.status_label.setText(f"{state_text} · {minutes:02d}:{seconds:02d}")
+            step = session.next_step or session.task or "眼前最小的那一步"
+            self.task_label.setText(f"现在只碰：{step}")
+            self.pause_button.setText("继续" if session.status == FocusSession.PAUSED else "暂停")
+            self.pause_button.show()
+            self.finish_button.show()
+        self.update_start_text()
+
+
+class FocusReviewPanel(QDialog):
+    save_requested = pyqtSignal(dict)
+    dismiss_requested = pyqtSignal()
+
+    def __init__(self, state, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(380, 360)
+        self.setStyleSheet(PANEL_STYLE)
+
+        shell = QFrame(self)
+        shell.setObjectName("actionPanel")
+        shell.setGeometry(8, 8, 364, 344)
+        layout = QVBoxLayout(shell)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(9)
+
+        eyebrow = QLabel("不评判完成度，只记下真实留下的东西")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("刚才留下了什么？")
+        title.setObjectName("title")
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("哪怕只写了一行，也可以记下来")
+        self.next_step = QLineEdit()
+        self.next_step.setPlaceholderText("接下来最小的一步")
+        progress_label = QLabel("现在大概做到哪里了")
+        progress_label.setObjectName("eyebrow")
+        self.progress = QSlider(Qt.Horizontal)
+        self.progress.setRange(0, 100)
+
+        save_button = QPushButton("记下这次进展")
+        save_button.setObjectName("primary")
+        save_button.clicked.connect(self.save)
+        dismiss_button = QPushButton("这次先不记录")
+        dismiss_button.clicked.connect(self.dismiss)
+
+        layout.addWidget(eyebrow)
+        layout.addWidget(title)
+        layout.addWidget(self.note)
+        layout.addWidget(self.next_step)
+        layout.addWidget(progress_label)
+        layout.addWidget(self.progress)
+        layout.addStretch()
+        layout.addWidget(save_button)
+        layout.addWidget(dismiss_button)
+
+    def load_state(self, state):
+        self.state = state
+        self.note.clear()
+        self.next_step.setText(state.get("next_step", ""))
+        self.progress.setValue(int(state.get("progress", 0)))
+
+    def save(self):
+        self.save_requested.emit(
+            {
+                "last_focus_note": self.note.text().strip(),
+                "next_step": self.next_step.text().strip(),
+                "progress": self.progress.value(),
+            }
+        )
+        self.hide()
+
+    def dismiss(self):
+        self.dismiss_requested.emit()
+        self.hide()
+
+
 class PetWindow(QWidget):
     action_requested = pyqtSignal(str)
     animal_changed = pyqtSignal(str)
@@ -767,6 +1037,7 @@ class PetWindow(QWidget):
         self.menu_visible = False
         self.bubble_text = ""
         self.bubble_visible = False
+        self.bubble_generation = 0
 
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -798,7 +1069,6 @@ class PetWindow(QWidget):
             ("当前任务", "task"),
             ("陪我开始", "focus"),
             ("安静一会", "quiet"),
-            ("换个样子", "animal"),
             ("设置", "settings"),
             ("退出芽砚", "quit"),
         ]
@@ -857,11 +1127,20 @@ class PetWindow(QWidget):
         self.home_position = QPoint(target)
 
     def say(self, text, duration=2500):
+        self.bubble_generation += 1
+        generation = self.bubble_generation
         self.bubble_text = text
-        self.bubble_visible = False
+        self.bubble_visible = True
+        self.update_mask()
+        self.update()
+        QTimer.singleShot(
+            max(0, int(duration)), lambda: self.hide_bubble(generation)
+        )
 
-    def hide_bubble(self):
-        if not self.menu_visible:
+    def hide_bubble(self, generation=None):
+        if generation is not None and generation != self.bubble_generation:
+            return
+        if not self.menu_visible and self.bubble_visible:
             self.bubble_visible = False
             self.update_mask()
             self.update()
@@ -877,11 +1156,15 @@ class PetWindow(QWidget):
         self.action_requested.emit(action)
 
     def toggle_menu(self):
-        self.menu.hide()
-        self.menu_visible = False
-        self.set_mood("happy")
-        self.action_requested.emit("chat")
-        QTimer.singleShot(900, lambda: self.set_mood("idle"))
+        self.menu_visible = not self.menu_visible
+        self.menu.setVisible(self.menu_visible)
+        if self.menu_visible:
+            self.bubble_visible = False
+            self.set_mood("happy")
+        else:
+            QTimer.singleShot(900, lambda: self.set_mood("idle"))
+        self.update_mask()
+        self.update()
 
     def cycle_animal(self):
         self.animal = "watercolor"
@@ -905,11 +1188,15 @@ class PetWindow(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            if self.menu_visible:
+                self.toggle_menu()
+                event.accept()
+                return
             self.drag_origin = event.globalPos()
             self.window_origin = self.pos()
             event.accept()
         elif event.button() == Qt.RightButton:
-            self.action_requested.emit("settings")
+            self.toggle_menu()
 
     def mouseMoveEvent(self, event):
         if self.drag_origin and event.buttons() & Qt.LeftButton:
@@ -942,6 +1229,10 @@ class PetWindow(QWidget):
         region = QRegion(scaled.mask()).translated(self.pet_rect.topLeft())
         region += region.translated(0, -3)
         region += region.translated(0, 6)
+        if self.bubble_visible and not self.menu_visible:
+            region += QRegion(self.bubble.geometry())
+        if self.menu_visible:
+            region += QRegion(self.menu.geometry())
         self.setMask(region)
 
     def showEvent(self, event):
@@ -991,6 +1282,7 @@ class PetWindow(QWidget):
             painter.setBrush(QColor(102, 139, 117, 145))
             for index, size in enumerate((4, 6, 8)):
                 painter.drawEllipse(277 + index * 8, 91 - index * 10, size, size)
+        self.draw_bubble(painter)
 
     def draw_fox(self, painter, body, dark, cream, tail_wave):
         tail = QPainterPath()
@@ -1190,11 +1482,13 @@ class YayanController:
         self.settings = self.client.settings
         self.messages = []
         self.workers = []
+        self.chat_worker = None
         self.pet = PetWindow("watercolor")
         self.pet.action_requested.connect(self.handle_action)
         self.pet.animal_changed.connect(self.save_animal)
         self.chat_panel = ChatPanel()
         self.chat_panel.send_requested.connect(self.send_chat)
+        self.chat_panel.cancel_requested.connect(self.cancel_chat)
         self.chat_panel.settings_requested.connect(lambda: self.handle_action("settings"))
         self.chat_panel.voice_requested.connect(self.toggle_recording)
         self.chat_panel.set_voice_input_enabled(self.settings.get("voice_input_enabled", False))
@@ -1205,8 +1499,22 @@ class YayanController:
         self.settings_panel.quit_requested.connect(self.app.quit)
         self.task_panel = TaskPanel(self.state)
         self.task_panel.changed.connect(self.save_task)
+        self.focus_panel = FocusPanel()
+        self.focus_panel.start_requested.connect(self.start_focus_session)
+        self.focus_panel.pause_requested.connect(self.pause_focus_session)
+        self.focus_panel.resume_requested.connect(self.resume_focus_session)
+        self.focus_panel.finish_requested.connect(self.finish_focus_session)
+        self.focus_review_panel = FocusReviewPanel(self.state)
+        self.focus_review_panel.save_requested.connect(self.save_focus_review)
+        self.focus_review_panel.dismiss_requested.connect(self.clear_focus_session)
+        self.focus_recovery_error = False
+        self.focus_session = self.load_focus_session()
+        self.focus_timer = QTimer(self.pet)
+        self.focus_timer.setInterval(1000)
+        self.focus_timer.timeout.connect(self.update_focus_session)
         self.recorder = None
         self.pet.show()
+        QTimer.singleShot(0, self.recover_focus_session)
 
     def place_panel(self, panel):
         screen = QApplication.screenAt(self.pet.geometry().center()) or QApplication.primaryScreen()
@@ -1220,6 +1528,155 @@ class YayanController:
         panel.raise_()
         panel.activateWindow()
 
+    def load_focus_session(self):
+        if not FOCUS_STATE_PATH.exists():
+            return None
+        try:
+            data = json.loads(FOCUS_STATE_PATH.read_text(encoding="utf-8-sig"))
+            return FocusSession.from_dict(data)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            self.focus_recovery_error = True
+            return None
+
+    def save_focus_session(self):
+        if self.focus_session is not None:
+            save_json(FOCUS_STATE_PATH, self.focus_session.to_dict())
+
+    def clear_focus_session(self):
+        self.focus_timer.stop()
+        self.focus_session = None
+        self.focus_panel.set_session(None)
+        try:
+            FOCUS_STATE_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def recover_focus_session(self):
+        if self.focus_recovery_error:
+            self.pet.say("上次的专注记录没有保存完整，我没有擅自恢复。", 4200)
+            return
+        if self.focus_session is None:
+            return
+        if self.focus_session.status == FocusSession.RUNNING:
+            if self.focus_session.refresh():
+                self.pet.say("上次的专注已经结束啦。要不要记录进展，由你决定。", 4200)
+                self.clear_focus_session()
+                return
+            answer = QMessageBox.question(
+                self.focus_panel,
+                "继续上次的专注？",
+                f"上次还有 {max(1, math.ceil(self.focus_session.remaining_seconds / 60))} 分钟。要继续吗？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                self.clear_focus_session()
+                return
+            self.focus_timer.start()
+            self.focus_panel.set_session(self.focus_session)
+            self.place_panel(self.focus_panel)
+        elif self.focus_session.status == FocusSession.PAUSED:
+            answer = QMessageBox.question(
+                self.focus_panel,
+                "保留上次暂停的专注？",
+                "上次的专注停在暂停状态。要保留并由你稍后继续吗？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.focus_panel.set_session(self.focus_session)
+                self.place_panel(self.focus_panel)
+            else:
+                self.clear_focus_session()
+        else:
+            self.clear_focus_session()
+
+    def show_focus_panel(self):
+        self.focus_panel.set_session(self.focus_session)
+        self.place_panel(self.focus_panel)
+
+    def start_focus_session(self, duration_minutes):
+        if self.focus_session is not None and self.focus_session.is_active:
+            answer = QMessageBox.question(
+                self.focus_panel,
+                "重新开始专注？",
+                "现在已有一段专注。要结束它，并按新时长重新开始吗？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self.focus_session = FocusSession.start(
+            duration_minutes=duration_minutes,
+            task=self.state.get("task", ""),
+            next_step=self.state.get("next_step", ""),
+            reminder_level=self.settings.get("reminder_strength", 2),
+        )
+        self.save_focus_session()
+        self.focus_timer.start()
+        self.focus_panel.set_session(self.focus_session)
+        step = self.focus_session.next_step or self.focus_session.task or "眼前最小的那一步"
+        self.pet.set_mood("happy")
+        self.pet.say(
+            f"好，我陪你守 {duration_minutes} 分钟。只碰“{step}”，不用一下做完。",
+            4200,
+        )
+
+    def pause_focus_session(self):
+        if self.focus_session is not None and self.focus_session.pause():
+            self.save_focus_session()
+            self.focus_panel.set_session(self.focus_session)
+            self.pet.say("先停在这里。剩下的时间，我替你好好放着。", 3200)
+
+    def resume_focus_session(self):
+        if self.focus_session is not None and self.focus_session.resume():
+            self.save_focus_session()
+            self.focus_timer.start()
+            self.focus_panel.set_session(self.focus_session)
+            self.pet.say("好，我们从刚才停下的地方继续。", 2800)
+
+    def finish_focus_session(self):
+        if self.focus_session is None or not self.focus_session.finish(reason="manual"):
+            return
+        self.complete_focus_session()
+
+    def update_focus_session(self):
+        if self.focus_session is None or not self.focus_session.is_active:
+            self.focus_timer.stop()
+            return
+        now = time.time()
+        if self.focus_session.refresh(now):
+            self.complete_focus_session()
+            return
+        due = self.focus_session.due_reminders(now)
+        if due:
+            self.save_focus_session()
+            if FocusSession.should_present_reminder(self.pet.quiet):
+                remaining = max(1, math.ceil(self.focus_session.remaining_seconds / 60))
+                self.pet.say(f"轻轻看一眼就好，还剩大约 {remaining} 分钟。", 3000)
+        self.focus_panel.set_session(self.focus_session)
+
+    def complete_focus_session(self):
+        self.focus_timer.stop()
+        self.save_focus_session()
+        self.focus_panel.set_session(self.focus_session)
+        message = "这一小段到啦。先看看刚才留下了什么，再决定要不要继续。"
+        self.pet.set_mood("happy")
+        if FocusSession.should_present_reminder(self.pet.quiet, final=True):
+            self.pet.say(message, 4500)
+        if self.settings.get("speak_replies", True) and self.client.configured:
+            self.start_worker("tts", message)
+        self.focus_review_panel.load_state(self.state)
+        self.place_panel(self.focus_review_panel)
+
+    def save_focus_review(self, values):
+        self.state.update(values)
+        save_json(DESKTOP_STATE_PATH, self.state)
+        self.task_panel.step.setText(self.state.get("next_step", ""))
+        self.task_panel.progress.setValue(int(self.state.get("progress", 0)))
+        self.clear_focus_session()
+        self.pet.say("记下啦。留下多少都算你真实走过的路。", 3400)
+
     def handle_action(self, action):
         if action == "chat":
             self.place_panel(self.chat_panel)
@@ -1227,10 +1684,7 @@ class YayanController:
         elif action == "task":
             self.place_panel(self.task_panel)
         elif action == "focus":
-            step = self.state.get("next_step") or self.state.get("task") or "眼前最小的那一步"
-            self.pet.set_mood("happy")
-            self.pet.say(f"好，我陪你守十二分钟。只碰“{step}”，不用一下做完。", 4200)
-            QTimer.singleShot(12 * 60 * 1000, self.focus_finished)
+            self.show_focus_panel()
         elif action == "quiet":
             self.pet.quiet = not self.pet.quiet
             self.pet.set_mood("sleepy" if self.pet.quiet else "idle")
@@ -1239,11 +1693,6 @@ class YayanController:
             self.show_settings()
         elif action == "quit":
             self.app.quit()
-
-    def focus_finished(self):
-        self.pet.set_mood("happy")
-        self.pet.say("十二分钟到啦。先看看刚才留下了什么，再决定要不要继续。", 4500)
-        QSound.play(str(PROJECT_DIR / "output" / "runtime" / "voice-reply.wav")) if AUDIO_REPLY_PATH.exists() else None
 
     def save_animal(self, animal):
         self.state["animal"] = animal
@@ -1269,17 +1718,34 @@ class YayanController:
     def send_chat(self, text):
         self.chat_panel.add_message("你", text)
         self.messages.append({"role": "user", "content": text})
+        self.chat_panel.start_streaming_message()
         self.chat_panel.set_busy(True)
         self.pet.set_mood("thinking")
         self.pet.say("嗯……让我认真听一下。", 1800)
-        self.start_worker("chat", list(self.messages), self.context())
+        self.start_worker(
+            "chat",
+            select_recent_messages(self.messages),
+            self.context(),
+        )
 
     def start_worker(self, mode, payload, context=None):
         worker = WorkThread(self.client, mode, payload, context)
-        worker.completed.connect(self.worker_completed)
-        worker.failed.connect(self.worker_failed)
+        worker.completed.connect(
+            lambda worker_mode, result, ref=worker: self.worker_completed(ref, worker_mode, result)
+        )
+        worker.failed.connect(
+            lambda worker_mode, error, ref=worker: self.worker_failed(ref, worker_mode, error)
+        )
+        worker.chunk.connect(
+            lambda worker_mode, text, ref=worker: self.worker_chunk(ref, worker_mode, text)
+        )
+        worker.cancelled.connect(
+            lambda worker_mode, text, ref=worker: self.worker_cancelled(ref, worker_mode, text)
+        )
         worker.finished.connect(lambda: self.release_worker(worker))
         self.workers.append(worker)
+        if mode == "chat":
+            self.chat_worker = worker
         worker.start()
 
     def release_worker(self, worker):
@@ -1287,10 +1753,27 @@ class YayanController:
             self.workers.remove(worker)
         worker.deleteLater()
 
-    def worker_completed(self, mode, result):
+    def cancel_chat(self):
+        if self.chat_worker is None:
+            return
+        worker = self.chat_worker
+        worker.cancel()
+        self.chat_worker = None
+        self.chat_panel.finish_streaming_message(stopped=True, eligible=False)
+        self.chat_panel.set_busy(False)
+        self.pet.set_mood("idle")
+
+    def worker_chunk(self, worker, mode, text):
+        if mode == "chat" and worker is self.chat_worker:
+            self.chat_panel.append_streaming_text(text)
+
+    def worker_completed(self, worker, mode, result):
         if mode == "chat":
+            if worker is not self.chat_worker:
+                return
+            self.chat_worker = None
             self.messages.append({"role": "assistant", "content": result})
-            self.chat_panel.add_message("芽砚", result, True)
+            self.chat_panel.finish_streaming_message(result, eligible=True)
             self.chat_panel.set_busy(False)
             self.pet.set_mood("happy")
             QTimer.singleShot(1200, lambda: self.pet.set_mood("idle"))
@@ -1302,9 +1785,19 @@ class YayanController:
             self.chat_panel.input.setText(result)
             self.chat_panel.input.setFocus()
 
-    def worker_failed(self, mode, error):
+    def worker_cancelled(self, worker, mode, partial_text):
+        if mode == "chat" and worker is self.chat_worker:
+            self.chat_worker = None
+            self.chat_panel.finish_streaming_message(stopped=True, eligible=False)
+            self.chat_panel.set_busy(False)
+            self.pet.set_mood("idle")
+
+    def worker_failed(self, worker, mode, error):
         if mode == "chat":
-            self.chat_panel.add_message("芽砚", error, True)
+            if worker is not self.chat_worker:
+                return
+            self.chat_worker = None
+            self.chat_panel.finish_streaming_message(error, eligible=False)
             self.chat_panel.set_busy(False)
             self.pet.set_mood("concerned")
             self.pet.say("我还没接上真正的大脑。设置好本机模型后，我再认真回答你。", 4200)

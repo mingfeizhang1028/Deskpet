@@ -16,7 +16,11 @@ from llm_client import ModelUnavailable, YayanLLM  # noqa: E402
 
 
 def verify_syntax():
-    for path in (PROJECT_DIR / "desktop" / "main.pyw", PROJECT_DIR / "desktop" / "llm_client.py"):
+    for path in (
+        PROJECT_DIR / "desktop" / "main.pyw",
+        PROJECT_DIR / "desktop" / "llm_client.py",
+        PROJECT_DIR / "desktop" / "focus_session.py",
+    ):
         ast.parse(path.read_text(encoding="utf-8"))
 
 
@@ -82,7 +86,68 @@ def verify_pet_interaction():
     left_click_opens_chat = actions == ["chat"] and not pet.menu_visible
     QTest.mouseClick(pet, Qt.RightButton, pos=QPoint(162, 190))
     app.processEvents()
-    right_click_opens_settings = actions[-1] == "settings"
+    right_click_opens_menu = pet.menu_visible and pet.menu.isVisible()
+    menu_labels = {
+        button.text() for button in pet.menu.findChildren(module.QPushButton)
+    }
+    menu_is_complete = menu_labels == {
+        "聊聊",
+        "当前任务",
+        "陪我开始",
+        "安静一会",
+        "设置",
+        "退出芽砚",
+    }
+    menu_does_not_offer_unimplemented_action = "换个样子" not in menu_labels
+    pet.toggle_menu()
+    pet.say("第一条气泡", duration=1000)
+    first_generation = pet.bubble_generation
+    pet.say("第二条气泡", duration=1000)
+    second_generation = pet.bubble_generation
+    pet.hide_bubble(first_generation)
+    bubble_generation_safe = (
+        pet.bubble_visible
+        and pet.bubble_text == "第二条气泡"
+        and second_generation != first_generation
+    )
+    bubble_mask_includes_text = pet.mask().contains(QPoint(30, 20))
+    pet.hide_bubble(second_generation)
+    focus = module.FocusPanel()
+    focus_presets = [focus.duration.itemData(index) for index in range(4)]
+    focus_default_duration = focus.selected_minutes() == 12
+    focus_duration_choices = focus_presets == [5, 12, 25, 45]
+    focus_custom_bounds = (
+        focus.custom_duration.minimum() == 1
+        and focus.custom_duration.maximum() == 120
+    )
+    focus_session = module.FocusSession.start(
+        duration_minutes=12,
+        task="完善芽砚",
+        next_step="完成专注面板",
+        now=100,
+    )
+    focus.set_session(focus_session)
+    focus_active_controls = (
+        focus.pause_button.isVisibleTo(focus)
+        and focus.finish_button.isVisibleTo(focus)
+        and "12:00" in focus.status_label.text()
+        and "完成专注面板" in focus.task_label.text()
+    )
+    review = module.FocusReviewPanel({"next_step": "旧下一步", "progress": 20})
+    review.load_state({"next_step": "旧下一步", "progress": 20})
+    review_values = []
+    review.save_requested.connect(review_values.append)
+    review.note.setText("完成了状态模块")
+    review.next_step.setText("连接聊天流")
+    review.progress.setValue(35)
+    review.save()
+    focus_review_user_owned = review_values == [
+        {
+            "last_focus_note": "完成了状态模块",
+            "next_step": "连接聊天流",
+            "progress": 35,
+        }
+    ]
     chat = module.ChatPanel()
     chat.add_message("你", "我今天有点不想工作。")
     chat.add_message(
@@ -143,10 +208,31 @@ def verify_pet_interaction():
         and chat.send_button.objectName() == "chatSend",
         "preview_written": chat_preview.exists() and chat_preview.stat().st_size > 0,
     }
+    chat.start_streaming_message()
+    chat.append_streaming_text("第一段")
+    chat.append_streaming_text("第二段")
+    chat.finish_streaming_message(eligible=True)
+    stream_body_text = chat.rendered_bodies[-1].text()
+    chat_design["streaming_rendering"] = stream_body_text == "第一段第二段"
+    chat.start_streaming_message()
+    chat.append_streaming_text("只收到一半")
+    chat.finish_streaming_message(stopped=True, eligible=False)
+    chat_design["cancelled_partial_not_eligible"] = (
+        chat.messages[-1].get("context_eligible") is False
+        and "已停止" in chat.messages[-1].get("text", "")
+    )
     chat.set_busy(True)
-    chat_design["busy_state"] = not chat.input.isEnabled() and not chat.send_button.isEnabled()
+    chat_design["busy_state"] = (
+        not chat.input.isEnabled()
+        and chat.send_button.isEnabled()
+        and chat.send_button.text() == "停止等待"
+    )
     chat.set_busy(False)
-    chat_design["ready_state"] = chat.input.isEnabled() and chat.send_button.isEnabled()
+    chat_design["ready_state"] = (
+        chat.input.isEnabled()
+        and chat.send_button.isEnabled()
+        and chat.send_button.text() == "发送"
+    )
     voice_input_default_hidden = chat.mic.isHidden()
     chat.set_voice_input_enabled(True)
     voice_input_can_enable = not chat.mic.isHidden() and chat.mic.isEnabled()
@@ -154,11 +240,22 @@ def verify_pet_interaction():
     voice_input_can_disable = chat.mic.isHidden() and not chat.mic.isEnabled()
     always_on_top = bool(pet.windowFlags() & Qt.WindowStaysOnTopHint)
     translucent = pet.testAttribute(Qt.WA_TranslucentBackground)
+    review.close()
+    focus.close()
     chat.close()
     pet.close()
     return {
         "left_click_opens_chat": left_click_opens_chat,
-        "right_click_opens_settings": right_click_opens_settings,
+        "right_click_opens_menu": right_click_opens_menu,
+        "menu_is_complete": menu_is_complete,
+        "menu_does_not_offer_unimplemented_action": menu_does_not_offer_unimplemented_action,
+        "bubble_generation_safe": bubble_generation_safe,
+        "bubble_mask_includes_text": bubble_mask_includes_text,
+        "focus_default_duration": focus_default_duration,
+        "focus_duration_choices": focus_duration_choices,
+        "focus_custom_bounds": focus_custom_bounds,
+        "focus_active_controls": focus_active_controls,
+        "focus_review_user_owned": focus_review_user_owned,
         "voice_input_default_hidden": voice_input_default_hidden,
         "voice_input_can_enable": voice_input_can_enable,
         "voice_input_can_disable": voice_input_can_disable,

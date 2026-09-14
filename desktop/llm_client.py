@@ -5,6 +5,8 @@ from pathlib import Path
 import keyring
 from openai import OpenAI
 
+from chat_stream import ChatCancelled, extract_delta, select_recent_messages
+
 
 class ModelUnavailable(RuntimeError):
     pass
@@ -96,6 +98,7 @@ class YayanLLM:
         options = {"api_key": api_key}
         if base_url:
             options["base_url"] = base_url
+        options["timeout"] = 60.0
         return OpenAI(**options)
 
     @staticmethod
@@ -137,7 +140,7 @@ class YayanLLM:
 
         context_text = json.dumps(context or {}, ensure_ascii=False, indent=2)
         instructions = f"{self.persona}\n\n## 当前明确上下文\n{context_text}"
-        trimmed = messages[-16:]
+        trimmed = select_recent_messages(messages)
         api_mode = os.environ.get("YAYAN_API_MODE") or self.settings.get("api_mode", "responses")
 
         if api_mode == "chat":
@@ -163,6 +166,58 @@ class YayanLLM:
             max_output_tokens=500,
         )
         return response.output_text.strip()
+
+    def stream_chat(self, messages, context=None, on_delta=None, should_cancel=None):
+        """Stream plain-text chat deltas and return the completed response."""
+        client = self._client()
+        model = os.environ.get("YAYAN_LLM_MODEL") or self.settings.get("llm_model")
+        if not model:
+            raise ModelUnavailable("请在 YAYAN_LLM_MODEL 中指定要使用的模型。")
+
+        context_text = json.dumps(context or {}, ensure_ascii=False, indent=2)
+        instructions = f"{self.persona}\n\n## 当前明确上下文\n{context_text}"
+        trimmed = select_recent_messages(messages)
+        api_mode = os.environ.get("YAYAN_API_MODE") or self.settings.get("api_mode", "responses")
+        parts = []
+        callback = on_delta or (lambda _text: None)
+        cancelled = should_cancel or (lambda: False)
+        try:
+            if api_mode == "chat":
+                stream = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "system", "content": instructions}, *trimmed],
+                    stream=True,
+                )
+            else:
+                stream = client.responses.create(
+                    model=model,
+                    instructions=instructions,
+                    input=trimmed,
+                    store=False,
+                    max_output_tokens=500,
+                    stream=True,
+                )
+            for event in stream:
+                if cancelled():
+                    raise ChatCancelled("".join(parts))
+                delta = extract_delta(event, api_mode)
+                if not delta:
+                    continue
+                parts.append(delta)
+                callback(delta)
+        except ChatCancelled:
+            raise
+        except ModelUnavailable:
+            raise
+        except Exception as error:
+            raise ModelUnavailable(
+                f"{api_mode} 流式请求失败：{self._safe_api_error(error)}"
+            ) from error
+
+        text = "".join(parts).strip()
+        if not text:
+            raise ModelUnavailable("模型服务返回了流式响应，但其中没有可读取的文本。")
+        return text
 
     def synthesize(self, text, output_path):
         client = self._client()
