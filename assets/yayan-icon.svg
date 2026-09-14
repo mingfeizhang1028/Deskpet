@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="芽砚">
+  <rect width="128" height="128" rx="24" fill="#eef2df"/>
+  <path d="M66 29C45 29 27 51 27 78c0 23 16 38 39 38 25 0 42-15 42-39 0-27-20-48-42-48Z" fill="#183f38"/>
+  <path d="M64 35c-1-13 4-23 13-29" fill="none" stroke="#5d8e62" stroke-width="6" stroke-linecap="round"/>
+  <path d="M75 8c15-5 25 1 30 12-14 5-25 1-30-12Z" fill="#8fba6c"/>
+  <path d="M65 19C52 9 40 11 32 20c11 9 24 9 33-1Z" fill="#6ca565"/>
+  <ellipse cx="52" cy="73" rx="6" ry="8" fill="#f7f5ec"/>
+  <ellipse cx="82" cy="73" rx="6" ry="8" fill="#f7f5ec"/>
+  <circle cx="54" cy="70" r="2" fill="#183f38"/>
+  <circle cx="84" cy="70" r="2" fill="#183f38"/>
+  <path d="M61 89c5 5 11 5 16 0" fill="none" stroke="#f7f5ec" stroke-width="4" stroke-linecap="round"/>
+  <path d="M99 87c14 1 21-7 20-21" fill="none" stroke="#e8775d" stroke-width="8" stroke-linecap="round"/>
+</svg>

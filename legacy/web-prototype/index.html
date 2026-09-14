@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eef2df" />
+    <title>芽砚 · 工作陪伴宠物</title>
+    <link rel="icon" href="assets/yayan-icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><i></i></span>
+          <div>
+            <strong>芽砚</strong>
+            <span>今天也只往前一点点</span>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button class="icon-button" id="soundToggle" type="button" aria-label="切换芽砚语音" title="芽砚语音">
+            <span aria-hidden="true">◖))</span>
+          </button>
+          <button class="quiet-toggle" id="quietToggle" type="button" aria-pressed="false">
+            <span class="quiet-dot"></span>
+            <span>安静陪伴</span>
+          </button>
+        </div>
+      </header>
+
+      <nav class="side-nav" aria-label="主要视图">
+        <button class="nav-button active" type="button" data-view="today" aria-label="今日" title="今日"><span>⌂</span></button>
+        <button class="nav-button" type="button" data-view="chat" aria-label="聊天" title="聊天"><span>◌</span></button>
+        <button class="nav-button" type="button" data-view="growth" aria-label="成长" title="成长"><span>♧</span></button>
+        <button class="nav-button" type="button" data-view="access" aria-label="权限" title="权限"><span>◎</span></button>
+        <span class="nav-spacer"></span>
+        <button class="nav-button" id="openSettings" type="button" aria-label="设置" title="设置"><span>⚙</span></button>
+      </nav>
+
+      <main class="pet-stage" aria-label="芽砚陪伴空间">
+        <div class="stage-grain" aria-hidden="true"></div>
+        <div class="stage-heading">
+          <p id="dayLabel">七月十五日 · 下午</p>
+          <h1 id="stageGreeting">回来啦。</h1>
+        </div>
+
+        <div class="status-pill" id="petStatus"><span></span>安静陪伴中</div>
+
+        <div class="speech-cloud" id="speechCloud" aria-live="polite">
+          <p id="petSpeech">任务山我先盖住了。我们只看最前面这一小块。</p>
+        </div>
+
+        <div class="pet-world">
+          <div class="sun-patch" aria-hidden="true"></div>
+          <div class="plant-shadow" aria-hidden="true"></div>
+          <div class="pet" id="pet" data-state="idle" role="img" aria-label="墨绿色水滴精灵芽砚，正在安静陪伴">
+            <div class="pet-shadow"></div>
+            <div class="sprout">
+              <span class="stem"></span>
+              <span class="leaf leaf-left"></span>
+              <span class="leaf leaf-right"></span>
+              <span class="flower"><i></i><i></i><i></i><i></i><b></b></span>
+            </div>
+            <div class="ink-orbit"><i></i><i></i><i></i></div>
+            <div class="body">
+              <span class="shine"></span>
+              <span class="eyebrow eyebrow-left"></span>
+              <span class="eyebrow eyebrow-right"></span>
+              <span class="eye eye-left"><i></i></span>
+              <span class="eye eye-right"><i></i></span>
+              <span class="blush blush-left"></span>
+              <span class="blush blush-right"></span>
+              <span class="mouth"></span>
+              <span class="arm arm-left"></span>
+              <span class="arm arm-right"></span>
+            </div>
+            <div class="bookmark-tail"><span></span></div>
+            <div class="tiny-page"><i></i><i></i><i></i></div>
+          </div>
+          <div class="desk-line" aria-hidden="true"></div>
+        </div>
+
+        <div class="companion-controls">
+          <button class="primary-control" id="voiceHold" type="button">
+            <span class="voice-rings" aria-hidden="true"><i></i><i></i><i></i></span>
+            <strong>按住和芽砚说话</strong>
+            <small id="voiceHint">松开后听它回答</small>
+          </button>
+          <button class="round-control" id="focusButton" type="button" aria-label="开始十二分钟陪跑" title="十二分钟陪跑">
+            <span id="focusIcon">12′</span>
+          </button>
+        </div>
+      </main>
+
+      <aside class="work-panel">
+        <div class="panel-tabs" role="tablist" aria-label="芽砚视图">
+          <button class="panel-tab active" type="button" role="tab" aria-selected="true" data-panel="today">今天</button>
+          <button class="panel-tab" type="button" role="tab" aria-selected="false" data-panel="chat">说说话</button>
+          <button class="panel-tab" type="button" role="tab" aria-selected="false" data-panel="growth">默契</button>
+          <button class="panel-tab" type="button" role="tab" aria-selected="false" data-panel="access">权限</button>
+        </div>
+
+        <section class="panel-view active" id="panel-today" aria-label="今日工作">
+          <div class="section-kicker">眼下最重要的</div>
+          <div class="task-headline">
+            <div>
+              <input id="mainTaskInput" value="完成今天最重要的那一小块" aria-label="当前主任务" />
+              <p id="taskMeta">已经碰了一下 · 按自己的节奏来</p>
+            </div>
+            <div class="progress-ring" id="progressRing" style="--progress: 38"><strong id="progressValue">38%</strong></div>
+          </div>
+
+          <div class="task-list" id="taskList">
+            <label class="task-row done">
+              <input type="checkbox" checked />
+              <span class="checkmark"></span>
+              <span><strong>打开材料，找到上次停下的位置</strong><small>已经完成</small></span>
+            </label>
+            <label class="task-row">
+              <input type="checkbox" />
+              <span class="checkmark"></span>
+              <span><strong>留下一个不必完美的初稿</strong><small>正在推进</small></span>
+            </label>
+            <label class="task-row">
+              <input type="checkbox" />
+              <span class="checkmark"></span>
+              <span><strong>标出明天接着做的位置</strong><small>还没开始</small></span>
+            </label>
+          </div>
+
+          <div class="next-step">
+            <div class="step-mark">→</div>
+            <div>
+              <span>下一小步</span>
+              <strong id="nextStepText">只写下这一部分最想说明的一句话</strong>
+            </div>
+            <button id="startStep" type="button">陪我开始</button>
+          </div>
+
+          <div class="today-note">
+            <span>芽砚捡到的线头</span>
+            <p id="todayNote">你不缺完整计划。今天更有用的是，先让手里的东西变成一版可以继续改的内容。</p>
+          </div>
+        </section>
+
+        <section class="panel-view" id="panel-chat" aria-label="与芽砚聊天">
+          <div class="chat-heading">
+            <div><span class="online-dot"></span><strong>芽砚在听</strong></div>
+            <button id="clearChat" type="button">收起今天的话</button>
+          </div>
+          <div class="chat-log" id="chatLog" aria-live="polite"></div>
+          <form class="chat-composer" id="chatForm">
+            <textarea id="chatInput" rows="2" placeholder="说乱一点也没关系……" aria-label="给芽砚发消息"></textarea>
+            <div>
+              <button class="composer-mic" id="composerMic" type="button" aria-label="语音输入" title="语音输入">●</button>
+              <button class="send-button" type="submit">说给它听</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel-view" id="panel-growth" aria-label="芽砚的成长">
+          <div class="growth-intro">
+            <span class="growth-sprout" aria-hidden="true"></span>
+            <div><span>相处中的芽砚</span><h2>它在慢慢学会你的节奏</h2></div>
+          </div>
+
+          <div class="trait-list">
+            <label><span><b>安静</b><small id="quietValue">68</small></span><input type="range" min="20" max="90" value="68" data-trait="quiet" /></label>
+            <label><span><b>俏皮</b><small id="playfulValue">42</small></span><input type="range" min="10" max="90" value="42" data-trait="playful" /></label>
+            <label><span><b>直接</b><small id="directValue">36</small></span><input type="range" min="10" max="85" value="36" data-trait="direct" /></label>
+            <label><span><b>爱聊天</b><small id="chattyValue">48</small></span><input type="range" min="10" max="90" value="48" data-trait="chatty" /></label>
+          </div>
+
+          <label class="evolve-toggle">
+            <span><strong>让芽砚悄悄调整</strong><small>只改变语气与陪伴方式</small></span>
+            <input id="evolveToggle" type="checkbox" checked />
+            <i></i>
+          </label>
+
+          <div class="learning-log">
+            <div class="learning-title"><span>最近学会的事</span><small>都可以忘掉</small></div>
+            <ul id="learningList">
+              <li><span>你更接受“先碰一下”，不喜欢“立刻开始”。</span><button type="button" aria-label="忘掉这条">×</button></li>
+              <li><span>疲惫时，先问一句比直接拆任务更有用。</span><button type="button" aria-label="忘掉这条">×</button></li>
+            </ul>
+          </div>
+          <button class="text-action danger" id="resetGrowth" type="button">让芽砚回到刚认识时</button>
+        </section>
+
+        <section class="panel-view" id="panel-access" aria-label="文件与隐私权限">
+          <div class="access-status">
+            <span class="lock-mark">只读</span>
+            <div><h2 id="folderName">还没有授权工作目录</h2><p id="folderMeta">芽砚现在看不见你的任何文件</p></div>
+          </div>
+
+          <button class="folder-button" id="chooseFolder" type="button">
+            <span class="folder-shape" aria-hidden="true"></span>
+            <span><strong>选择一个工作目录</strong><small>浏览器只会请求读取权限</small></span>
+            <i>→</i>
+          </button>
+          <input type="file" id="directoryFallback" webkitdirectory multiple hidden />
+
+          <div class="permission-lines">
+            <div><span class="permission-icon yes">✓</span><p><strong>可以看</strong><small>你主动选择的目录和文件</small></p></div>
+            <div><span class="permission-icon no">×</span><p><strong>不能动</strong><small>修改、移动、删除或执行文件</small></p></div>
+            <div><span class="permission-icon ask">?</span><p><strong>先问你</strong><small>扩大目录、上传内容或恢复备份</small></p></div>
+          </div>
+
+          <div class="scan-result" id="scanResult" hidden>
+            <div><span>发现的文件</span><strong id="fileCount">0</strong></div>
+            <div><span>最后查看</span><strong id="scanTime">刚刚</strong></div>
+          </div>
+
+          <label class="privacy-toggle">
+            <span><strong>仅在本地整理</strong><small>不把文件内容发送给模型</small></span>
+            <input type="checkbox" checked disabled />
+            <i></i>
+          </label>
+        </section>
+      </aside>
+    </div>
+
+    <dialog id="settingsDialog">
+      <form method="dialog">
+        <div class="dialog-head"><div><span>芽砚的声音</span><h2>听起来舒服就好</h2></div><button value="cancel" aria-label="关闭">×</button></div>
+        <label class="setting-row"><span>说话速度</span><input id="speechRate" type="range" min="0.7" max="1.3" value="0.96" step="0.02" /></label>
+        <label class="setting-row"><span>声音音量</span><input id="speechVolume" type="range" min="0" max="1" value="0.72" step="0.05" /></label>
+        <label class="evolve-toggle"><span><strong>读出芽砚的回答</strong><small>可以随时打断它</small></span><input id="voiceReplyToggle" type="checkbox" checked /><i></i></label>
+        <p class="dialog-note">麦克风只会在你按住说话或主动点击时开启。</p>
+        <button class="dialog-done" value="default">好，就这样</button>
+      </form>
+    </dialog>
+
+    <script src="app.js"></script>
+  </body>
+</html>

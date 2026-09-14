@@ -1,0 +1,14 @@
+{
+  "default_animal": "watercolor",
+  "llm_model": "gpt-5.4-mini",
+  "api_mode": "responses",
+  "tts_model": "gpt-4o-mini-tts",
+  "tts_voice": "shimmer",
+  "stt_model": "gpt-4o-mini-transcribe",
+  "voice_input_enabled": false,
+  "speak_replies": true,
+  "interaction_style": "gentle",
+  "reminder_strength": 2,
+  "memory_mode": "graded",
+  "window_scale": 1.0
+}
