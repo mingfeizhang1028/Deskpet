@@ -15,6 +15,7 @@ from PyQt5.QtCore import (
     QPropertyAnimation,
     QProcess,
     QRect,
+    QLockFile,
     QThread,
     QTimer,
     QUrl,
@@ -51,6 +52,9 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -71,37 +75,115 @@ AUDIO_REPLY_PATH = RUNTIME_DIR / "voice-reply.wav"
 PET_ASSET_PATH = PROJECT_DIR / "assets" / "yayan-watercolor-base.png"
 STARTUP_LOG_PATH = RUNTIME_DIR / "desktop-startup.log"
 INSTANCE_NAME = "YayanDesktopPet-v2"
+INSTANCE_LOCK_PATH = RUNTIME_DIR / "yayan-single-instance.lock"
 
 
 PANEL_STYLE = """
 QDialog, QFrame#actionPanel {
-    background: #fffdf5;
-    color: #3f4945;
-    border: 1px solid rgba(78, 102, 88, 48);
-    border-radius: 8px;
+    background: #f4f7f6;
+    color: #263a36;
+    border: 1px solid #cbd8d4;
+    border-radius: 12px;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 13px;
 }
-QLabel#title { color: #244b40; font-size: 17px; font-weight: 700; }
-QLabel#eyebrow { color: #df765e; font-size: 10px; }
+QFrame#actionPanel QLabel {
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 14px;
+}
+QFrame#actionPanel QLabel#title {
+    color: #1f4039;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#eyebrow { color: #6b837d; font-size: 11px; }
 QPushButton {
-    min-height: 34px;
-    padding: 0 12px;
-    color: #2c4c43;
-    background: #edf3df;
-    border: 1px solid rgba(88, 121, 86, 42);
-    border-radius: 5px;
-    font-size: 11px;
+    min-height: 38px;
+    padding: 0 13px;
+    color: #294b43;
+    background: #e8efed;
+    border: 1px solid #cbdad5;
+    border-radius: 8px;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 14px;
 }
-QPushButton:hover { background: #dfecc9; }
-QPushButton#primary { color: white; background: #e8775d; border: none; }
-QPushButton#primary:hover { background: #d96751; }
-QPushButton#quiet { background: #e7eeee; }
+QPushButton[role="settingsAction"] {
+    min-height: 42px;
+    max-height: 42px;
+}
+QPushButton:hover { background: #dce9e5; border-color: #a9c2ba; }
+QPushButton#primary { color: white; background: #285b50; border: 1px solid #285b50; }
+QPushButton#primary:hover { background: #1f4d43; }
+QPushButton#quiet { background: #eef3f2; color: #4d6861; }
 QLineEdit, QTextBrowser {
-    padding: 9px;
-    color: #35453f;
-    background: white;
-    border: 1px solid rgba(65, 94, 78, 45);
-    border-radius: 5px;
-    selection-background-color: #e8775d;
+    min-height: 38px;
+    padding: 0 12px;
+    color: #263a36;
+    background: #ffffff;
+    border: 1px solid #c7d5d1;
+    border-radius: 7px;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 14px;
+    selection-background-color: #bcd9d1;
+}
+QComboBox, QSpinBox {
+    min-height: 38px;
+    padding: 0 12px;
+    color: #263a36;
+    background: #ffffff;
+    border: 1px solid #c7d5d1;
+    border-radius: 7px;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 14px;
+}
+QComboBox::drop-down {
+    width: 28px;
+    border: none;
+    border-left: 1px solid #d9e3e0;
+    background: #f7faf9;
+    border-top-right-radius: 7px;
+    border-bottom-right-radius: 7px;
+}
+QComboBox::down-arrow {
+    image: none;
+}
+QComboBox QAbstractItemView {
+    color: #263a36;
+    background: #ffffff;
+    border: 1px solid #c7d5d1;
+    selection-background-color: #dcebe7;
+    selection-color: #1f4039;
+    padding: 4px;
+}
+QCheckBox {
+    min-height: 30px;
+    color: #46635b;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 13px;
+}
+QLabel#fieldLabel {
+    color: #45645c;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 14px;
+    font-weight: 600;
+}
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #d6e2df;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #5b8d80;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    background: #f4f7f6;
+    border: 2px solid #5b8d80;
+    border-radius: 7px;
 }
 """
 
@@ -110,74 +192,94 @@ CHAT_PANEL_STYLE = """
 QDialog#chatPanel {
     background: transparent;
     border: none;
-    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
 }
 QFrame#chatShell {
-    color: #354840;
-    background: qlineargradient(
-        x1: 0, y1: 0, x2: 0, y2: 1,
-        stop: 0 #fbfcf8,
-        stop: 0.58 #f8faf6,
-        stop: 1 #f3f7f2
-    );
-    border: 1px solid rgba(60, 89, 77, 38);
-    border-radius: 22px;
+    color: #263a36;
+    background: #f1f5f4;
+    border: 1px solid #bfcec9;
+    border-radius: 16px;
 }
 QLabel#chatTitle {
-    color: #244b3e;
-    font-weight: 600;
-    letter-spacing: 1px;
+    color: #1f4039;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-weight: 700;
+    letter-spacing: 0px;
 }
 QLabel#chatPresence {
-    color: #7a8c85;
+    color: #6d7e79;
 }
 QLabel#presenceDot {
-    color: #78a987;
+    color: #4f9d88;
 }
 QPushButton#chatHeaderButton {
-    padding: 0 9px;
-    color: #65766f;
+    padding: 0 8px;
+    color: #58706a;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: 7px;
 }
 QPushButton#chatHeaderButton:hover {
-    color: #355a4d;
-    background: rgba(224, 235, 226, 150);
-    border-color: rgba(75, 106, 91, 24);
+    color: #244f45;
+    background: #e1ebe8;
+    border-color: #c0d3cd;
 }
 QScrollArea#chatLog {
-    color: #354840;
-    background: rgba(255, 255, 255, 112);
-    border: 1px solid rgba(68, 96, 83, 24);
-    border-radius: 16px;
+    color: #263a36;
+    background: #f7faf9;
+    border: 1px solid #d1ddda;
+    border-radius: 12px;
 }
 QWidget#chatMessageView { background: transparent; }
+QFrame#chatWelcome {
+    background: #e8f0ed;
+    border: 1px solid #d0dfda;
+    border-radius: 14px;
+}
+QLabel#chatWelcomeStatus {
+    color: #4f8c7d;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#chatWelcomeTitle {
+    color: #285b50;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 17px;
+    font-weight: 700;
+}
+QLabel#chatWelcomeCopy {
+    color: #6d7e79;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 13px;
+}
 QFrame#petBubble, QFrame#userBubble {
-    border-radius: 16px;
+    border-radius: 8px;
 }
 QFrame#petBubble {
-    background: rgba(255, 255, 255, 210);
-    border: 1px solid rgba(75, 102, 89, 22);
+    background: #e8efed;
+    border: 1px solid #d2dfdb;
+    border-left: 3px solid #6d9b8f;
 }
 QFrame#userBubble {
-    background: rgba(226, 239, 228, 220);
-    border: 1px solid rgba(80, 115, 90, 28);
+    background: #dce8e5;
+    border: 1px solid #c8dad5;
+    border-right: 3px solid #3f7568;
 }
 QLabel#messageSpeakerPet, QLabel#messageSpeakerUser {
     background: transparent;
     border: none;
     font-weight: 600;
 }
-QLabel#messageSpeakerPet { color: #577568; }
-QLabel#messageSpeakerUser { color: #9b6c57; }
+QLabel#messageSpeakerPet { color: #4f756b; }
+QLabel#messageSpeakerUser { color: #4b7168; }
 QLabel#messageStage {
-    color: #7d9189;
+    color: #6a817b;
     background: transparent;
     border: none;
 }
 QLabel#messageBody {
-    color: #354840;
+    color: #263a36;
     background: transparent;
     border: none;
 }
@@ -188,48 +290,58 @@ QScrollBar:vertical {
 }
 QScrollBar::handle:vertical {
     min-height: 30px;
-    background: rgba(103, 132, 117, 72);
-    border-radius: 3px;
+    background: #a9c2ba;
+    border-radius: 2px;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
 QFrame#chatComposer {
-    background: rgba(255, 255, 255, 220);
-    border: 1px solid rgba(58, 91, 76, 34);
-    border-radius: 16px;
+    background: #ffffff;
+    border: 1px solid #c5d4d0;
+    border-radius: 13px;
 }
 QLineEdit#chatInput {
-    padding: 0 4px;
-    color: #33483f;
+    padding: 0 7px;
+    color: #263a36;
     background: transparent;
     border: none;
-    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
-    selection-color: #244b3e;
-    selection-background-color: #d8e9dc;
+    font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    selection-color: #1f4039;
+    selection-background-color: #cfe3de;
 }
 QLineEdit#chatInput:disabled {
     color: #91a099;
 }
 QPushButton#chatSend {
-    padding: 0 9px;
+    padding: 0 13px;
     color: white;
-    background: #4d7563;
+    background: #285b50;
     border: none;
-    border-radius: 11px;
+    border-radius: 10px;
     font-weight: 600;
 }
-QPushButton#chatSend:hover { background: #3f6655; }
-QPushButton#chatSend:pressed { background: #345748; }
-QPushButton#chatSend:disabled { color: #e8eeea; background: #9eafa7; }
-QPushButton#chatMic {
-    padding: 0 11px;
-    color: #526b60;
-    background: rgba(230, 238, 232, 178);
-    border: 1px solid rgba(70, 99, 85, 28);
-    border-radius: 15px;
+QPushButton#chatSend:hover { background: #1f4d43; }
+QPushButton#chatSend:pressed { background: #183f37; }
+QPushButton#chatSend:disabled { color: #e8eeea; background: #90a8a1; }
+QPushButton#chatStop {
+    padding: 0 12px;
+    color: #7b5048;
+    background: #f2e7e4;
+    border: 1px solid #dfc9c3;
+    border-radius: 10px;
+    font-weight: 600;
 }
-QPushButton#chatMic:hover { background: #dfeae2; }
+QPushButton#chatStop:hover { background: #ead6d0; }
+QPushButton#chatStop:pressed { background: #e1c5bd; }
+QPushButton#chatMic {
+    padding: 0 12px;
+    color: #466b62;
+    background: #e7efed;
+    border: 1px solid #c8dad5;
+    border-radius: 9px;
+}
+QPushButton#chatMic:hover { background: #d9e9e4; }
 """
 
 
@@ -246,6 +358,32 @@ def save_json(path, value):
     pending = path.with_suffix(".pending")
     pending.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     pending.replace(path)
+
+
+class CleanComboBox(QComboBox):
+    """A compact combo box with a deliberately drawn, minimal chevron."""
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        option.subControls &= ~QStyle.SC_ComboBoxArrow
+        painter.drawComplexControl(QStyle.CC_ComboBox, option)
+        arrow_rect = self.style().subControlRect(
+            QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxArrow, self
+        )
+        center = arrow_rect.center()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#628079"))
+        painter.drawPolygon(
+            QPolygon(
+                [
+                    QPoint(center.x() - 4, center.y() - 2),
+                    QPoint(center.x() + 4, center.y() - 2),
+                    QPoint(center.x(), center.y() + 3),
+                ]
+            )
+        )
 
 
 def log_startup(event, **details):
@@ -313,7 +451,7 @@ class ChatPanel(QDialog):
         self.setMaximumSize(450, 660)
         self.resize(390, 570)
         self.setStyleSheet(CHAT_PANEL_STYLE)
-        self.interface_font = self.make_font(14)
+        self.interface_font = self.make_font(15)
         self.setFont(self.interface_font)
         self.recording = False
         self.busy = False
@@ -333,8 +471,8 @@ class ChatPanel(QDialog):
         self.shell.setObjectName("chatShell")
         outer_layout.addWidget(self.shell)
         layout = QVBoxLayout(self.shell)
-        layout.setContentsMargins(17, 16, 17, 14)
-        layout.setSpacing(11)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
@@ -372,7 +510,7 @@ class ChatPanel(QDialog):
         self.message_view = QWidget()
         self.message_view.setObjectName("chatMessageView")
         self.message_layout = QVBoxLayout(self.message_view)
-        self.message_layout.setContentsMargins(13, 13, 13, 13)
+        self.message_layout.setContentsMargins(14, 14, 14, 14)
         self.message_layout.setSpacing(10)
         self.message_layout.setSizeConstraint(self.message_layout.SetMinAndMaxSize)
         self.log.setWidget(self.message_view)
@@ -396,12 +534,17 @@ class ChatPanel(QDialog):
         composer.setObjectName("chatComposer")
         composer_layout = QHBoxLayout(composer)
         composer_layout.setContentsMargins(10, 6, 6, 6)
-        composer_layout.setSpacing(7)
+        composer_layout.setSpacing(8)
         self.send_button = QPushButton("发送")
         self.send_button.setObjectName("chatSend")
-        self.send_button.clicked.connect(self.handle_send_button)
+        self.send_button.clicked.connect(self.send)
+        self.stop_button = QPushButton("停止生成")
+        self.stop_button.setObjectName("chatStop")
+        self.stop_button.clicked.connect(self.cancel_requested.emit)
+        self.stop_button.hide()
         composer_layout.addWidget(self.input, 1)
         composer_layout.addWidget(self.send_button)
+        composer_layout.addWidget(self.stop_button)
 
         controls.addWidget(self.mic)
         controls.addWidget(composer, 1)
@@ -411,11 +554,14 @@ class ChatPanel(QDialog):
         layout.addLayout(controls)
         self.apply_adaptive_layout()
 
-    def make_font(self, pixel_size, weight=QFont.Normal):
-        font = QFont("Microsoft YaHei UI")
+    def make_font(self, pixel_size, weight=QFont.Normal, family="Noto Sans SC"):
+        font = QFont(family)
         font.setPixelSize(max(9, int(pixel_size)))
         font.setWeight(weight)
         return font
+
+    def make_display_font(self, pixel_size):
+        return self.make_font(pixel_size, QFont.Bold, "Noto Sans SC")
 
     def adaptive_scale(self):
         width_scale = self.width() / 390
@@ -430,30 +576,32 @@ class ChatPanel(QDialog):
             return
 
         scale = self.adaptive_scale()
-        self.interface_font = self.make_font(self.scaled_pixels(14))
+        self.interface_font = self.make_font(self.scaled_pixels(15))
         self.setFont(self.interface_font)
-        self.title.setFont(self.make_font(self.scaled_pixels(16), QFont.DemiBold))
+        self.title.setFont(self.make_display_font(self.scaled_pixels(20)))
         self.presence.setFont(self.make_font(self.scaled_pixels(11)))
-        self.presence_dot.setFont(self.make_font(self.scaled_pixels(12)))
-        self.settings_button.setFont(self.make_font(self.scaled_pixels(11)))
+        self.presence_dot.setFont(self.make_font(self.scaled_pixels(11)))
+        self.settings_button.setFont(self.make_font(self.scaled_pixels(12), QFont.DemiBold))
         self.close_button.setFont(self.make_font(self.scaled_pixels(12)))
-        self.input.setFont(self.make_font(self.scaled_pixels(13)))
-        self.send_button.setFont(self.make_font(self.scaled_pixels(11), QFont.DemiBold))
-        self.mic.setFont(self.make_font(self.scaled_pixels(11)))
+        self.input.setFont(self.make_font(self.scaled_pixels(15)))
+        self.send_button.setFont(self.make_font(self.scaled_pixels(13), QFont.DemiBold))
+        self.stop_button.setFont(self.make_font(self.scaled_pixels(13), QFont.DemiBold))
+        self.mic.setFont(self.make_font(self.scaled_pixels(12), QFont.DemiBold))
 
-        header_height = round(32 * scale)
+        header_height = round(30 * scale)
         self.close_button.setFixedSize(header_height, header_height)
         self.settings_button.setFixedSize(round(46 * scale), header_height)
-        self.send_button.setFixedSize(round(48 * scale), round(34 * scale))
-        self.input.setMinimumHeight(round(34 * scale))
-        self.mic.setFixedHeight(round(46 * scale))
+        self.send_button.setFixedSize(round(58 * scale), round(40 * scale))
+        self.stop_button.setFixedSize(round(84 * scale), round(40 * scale))
+        self.input.setMinimumHeight(round(40 * scale))
+        self.mic.setFixedHeight(round(40 * scale))
 
         for speaker in self.rendered_speakers:
             speaker.setFont(self.make_font(self.scaled_pixels(11), QFont.DemiBold))
         for stage in self.rendered_stages:
-            stage.setFont(self.make_font(self.scaled_pixels(12)))
+            stage.setFont(self.make_font(self.scaled_pixels(11)))
         for body in self.rendered_bodies:
-            body.setFont(self.make_font(self.scaled_pixels(14)))
+            body.setFont(self.make_font(self.scaled_pixels(15)))
         for bubble in self.rendered_bubbles:
             self.update_bubble_width(bubble, bubble.property("messageText") or "")
         self.message_view.adjustSize()
@@ -536,9 +684,22 @@ class ChatPanel(QDialog):
         QTimer.singleShot(0, self.scroll_to_bottom)
 
     def render_messages(self):
-        self.empty_message = QLabel("摸摸它，再慢慢说。\n想到哪里，就说到哪里。")
-        self.empty_message.setObjectName("chatPresence")
-        self.empty_message.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.empty_message = QFrame()
+        self.empty_message.setObjectName("chatWelcome")
+        self.empty_message.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        welcome_layout = QVBoxLayout(self.empty_message)
+        welcome_layout.setContentsMargins(18, 16, 18, 16)
+        welcome_layout.setSpacing(5)
+        status = QLabel("●  准备好了")
+        status.setObjectName("chatWelcomeStatus")
+        title = QLabel("和芽砚慢慢聊")
+        title.setObjectName("chatWelcomeTitle")
+        copy = QLabel("输入一句话，想到哪里，就说到哪里。")
+        copy.setObjectName("chatWelcomeCopy")
+        welcome_layout.addWidget(status)
+        welcome_layout.addWidget(title)
+        welcome_layout.addWidget(copy)
+        self.message_layout.addStretch(1)
         self.message_layout.addWidget(self.empty_message)
         self.message_layout.addStretch(1)
 
@@ -557,7 +718,7 @@ class ChatPanel(QDialog):
         bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
         self.rendered_bubbles.append(bubble)
         bubble_layout = QVBoxLayout(bubble)
-        bubble_layout.setContentsMargins(11, 9, 11, 10)
+        bubble_layout.setContentsMargins(13, 9, 13, 10)
         bubble_layout.setSpacing(4)
 
         speaker = QLabel(message["speaker"])
@@ -572,7 +733,7 @@ class ChatPanel(QDialog):
             stage_end = body_text.find("）") + 1
             stage = QLabel(body_text[:stage_end])
             stage.setObjectName("messageStage")
-            stage.setFont(self.make_font(self.scaled_pixels(12)))
+            stage.setFont(self.make_font(self.scaled_pixels(11)))
             stage.setTextFormat(Qt.PlainText)
             stage.setWordWrap(True)
             bubble_layout.addWidget(stage)
@@ -582,7 +743,7 @@ class ChatPanel(QDialog):
         if body_text or message.get("streaming"):
             body = QLabel(body_text)
             body.setObjectName("messageBody")
-            body.setFont(self.make_font(self.scaled_pixels(14)))
+            body.setFont(self.make_font(self.scaled_pixels(15)))
             body.setTextFormat(Qt.PlainText)
             body.setTextInteractionFlags(Qt.TextSelectableByMouse)
             body.setWordWrap(True)
@@ -604,11 +765,11 @@ class ChatPanel(QDialog):
     def update_bubble_width(self, bubble, text):
         scale = self.adaptive_scale()
         max_line_length = max((len(line) for line in str(text).splitlines()), default=8)
-        available_width = max(220, self.width() - round(58 * scale))
-        maximum_width = min(round(300 * scale), round(available_width * 0.92))
-        preferred_width = round(28 * scale) + min(max_line_length, 21) * self.scaled_pixels(13)
-        bubble_width = min(maximum_width, max(round(150 * scale), preferred_width))
-        bubble.setFixedWidth(max(140, bubble_width))
+        available_width = max(220, self.width() - round(62 * scale))
+        maximum_width = min(round(304 * scale), round(available_width * 0.90))
+        preferred_width = round(30 * scale) + min(max_line_length, 20) * self.scaled_pixels(13)
+        bubble_width = min(maximum_width, max(round(148 * scale), preferred_width))
+        bubble.setFixedWidth(max(144, bubble_width))
 
     def scroll_to_bottom(self):
         scroll_bar = self.log.verticalScrollBar()
@@ -620,12 +781,6 @@ class ChatPanel(QDialog):
             return
         self.input.clear()
         self.send_requested.emit(text)
-
-    def handle_send_button(self):
-        if self.busy:
-            self.cancel_requested.emit()
-        else:
-            self.send()
 
     def set_recording(self, active):
         self.recording = active
@@ -642,8 +797,10 @@ class ChatPanel(QDialog):
     def set_busy(self, busy):
         self.busy = bool(busy)
         self.input.setEnabled(not self.busy)
-        self.send_button.setEnabled(True)
-        self.send_button.setText("停止等待" if self.busy else "发送")
+        self.send_button.setEnabled(not self.busy)
+        self.send_button.setText("发送")
+        self.stop_button.setEnabled(self.busy)
+        self.stop_button.setVisible(self.busy)
         self.input.setPlaceholderText("芽砚正在想……" if self.busy else "和芽砚说点什么……")
         if not self.busy:
             self.input.setFocus()
@@ -659,15 +816,15 @@ class SettingsPanel(QDialog):
         super().__init__(parent)
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(430, 590)
+        self.setFixedSize(460, 620)
         self.setStyleSheet(PANEL_STYLE)
 
         shell = QFrame(self)
         shell.setObjectName("actionPanel")
-        shell.setGeometry(8, 8, 414, 574)
+        shell.setGeometry(8, 8, 444, 604)
         layout = QVBoxLayout(shell)
-        layout.setContentsMargins(20, 17, 20, 17)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(8)
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
@@ -684,8 +841,11 @@ class SettingsPanel(QDialog):
         header.addStretch()
         header.addWidget(close_button)
 
-        form = QFormLayout()
-        form.setSpacing(9)
+        form = QGridLayout()
+        form.setVerticalSpacing(9)
+        form.setHorizontalSpacing(14)
+        form.setColumnStretch(0, 1)
+        form.setColumnStretch(1, 1)
         self.base_url = QLineEdit()
         self.base_url.setPlaceholderText("留空使用服务默认地址")
         self.api_key = QLineEdit()
@@ -693,17 +853,17 @@ class SettingsPanel(QDialog):
         self.api_key.setPlaceholderText("留空则保留已保存密钥")
         self.model = QLineEdit()
         self.model.setPlaceholderText("模型名称")
-        self.api_mode = QComboBox()
+        self.api_mode = CleanComboBox()
         self.api_mode.addItem("Responses API", "responses")
         self.api_mode.addItem("Chat Completions 兼容", "chat")
-        self.voice = QComboBox()
+        self.voice = CleanComboBox()
         for name in ("shimmer", "coral", "nova", "alloy"):
             self.voice.addItem(name, name)
-        self.interaction_style = QComboBox()
+        self.interaction_style = CleanComboBox()
         self.interaction_style.addItem("温柔灵动", "gentle")
         self.interaction_style.addItem("更活泼一点", "lively")
         self.interaction_style.addItem("更安静一点", "quiet")
-        self.memory_mode = QComboBox()
+        self.memory_mode = CleanComboBox()
         self.memory_mode.addItem("分级记忆", "graded")
         self.memory_mode.addItem("仅当前对话", "session")
         self.reminder_strength = QSlider(Qt.Horizontal)
@@ -711,43 +871,63 @@ class SettingsPanel(QDialog):
         self.reminder_strength.setValue(2)
         self.voice_input_enabled = QCheckBox("在聊天窗显示“按住说话”按钮")
         self.speak_replies = QCheckBox("回复时播放语音")
-        form.addRow("API 地址", self.base_url)
-        form.addRow("API 密钥", self.api_key)
-        form.addRow("模型", self.model)
-        form.addRow("接口", self.api_mode)
-        form.addRow("声音", self.voice)
-        form.addRow("相处语气", self.interaction_style)
-        form.addRow("记忆方式", self.memory_mode)
-        form.addRow("提醒力度", self.reminder_strength)
+        def add_field(label_text, widget, row, column=0, span=1):
+            label = QLabel(label_text)
+            label.setObjectName("fieldLabel")
+            label.setFixedHeight(18)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            form.addWidget(label, row, column, 1, span)
+            widget.setFixedHeight(40)
+            form.addWidget(widget, row + 1, column, 1, span)
+
+        add_field("API 地址", self.base_url, 0, span=2)
+        add_field("API 密钥", self.api_key, 2, span=2)
+        add_field("模型", self.model, 4)
+        add_field("接口", self.api_mode, 4, 1)
+        add_field("声音", self.voice, 6)
+        add_field("相处语气", self.interaction_style, 6, 1)
+        add_field("记忆方式", self.memory_mode, 8)
+        self.reminder_strength.setMinimumHeight(40)
+        add_field("提醒力度", self.reminder_strength, 8, 1)
 
         key_note = QLabel("密钥保存到 Windows 凭据管理器，不写入项目文件。")
         key_note.setWordWrap(True)
         key_note.setObjectName("eyebrow")
-        clear_key = QPushButton("移除已保存密钥")
+        clear_key = QPushButton("清除密钥")
+        clear_key.setObjectName("settingsAction")
+        clear_key.setProperty("role", "settingsAction")
+        clear_key.setFixedSize(92, 40)
         clear_key.clicked.connect(self.clear_key_requested.emit)
-        save = QPushButton("保存设置")
-        save.setObjectName("primary")
-        save.clicked.connect(self.save)
-        actions = QHBoxLayout()
-        actions.addWidget(clear_key)
-        actions.addStretch()
-        actions.addWidget(save)
-        runtime_actions = QHBoxLayout()
         restart = QPushButton("重启芽砚")
         restart.setObjectName("quiet")
+        restart.setProperty("role", "settingsAction")
+        restart.setFixedSize(92, 40)
         restart.clicked.connect(self.restart_requested.emit)
+        save = QPushButton("保存设置")
+        save.setObjectName("primary")
+        save.setProperty("role", "settingsAction")
+        save.setFixedSize(92, 40)
+        save.clicked.connect(self.save)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addStretch()
+        actions.addWidget(clear_key)
+        actions.addWidget(restart)
+        actions.addWidget(save)
+        actions.addStretch()
         quit_button = QPushButton("退出芽砚")
+        quit_button.setObjectName("quiet")
+        quit_button.setProperty("role", "settingsAction")
+        quit_button.setFixedSize(92, 40)
         quit_button.clicked.connect(self.quit_requested.emit)
-        runtime_actions.addWidget(restart)
-        runtime_actions.addWidget(quit_button)
+        actions.addWidget(quit_button)
 
         layout.addLayout(header)
         layout.addLayout(form)
         layout.addWidget(self.voice_input_enabled)
         layout.addWidget(self.speak_replies)
         layout.addWidget(key_note)
-        layout.addStretch()
-        layout.addLayout(runtime_actions)
+        layout.addSpacing(4)
         layout.addLayout(actions)
 
     def load_values(self, settings):
@@ -792,14 +972,15 @@ class TaskPanel(QDialog):
         self.state = state
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(360, 310)
+        self.setFixedSize(360, 286)
         self.setStyleSheet(PANEL_STYLE)
 
         shell = QFrame(self)
         shell.setObjectName("actionPanel")
-        shell.setGeometry(8, 8, 344, 294)
+        shell.setGeometry(8, 8, 344, 270)
         layout = QVBoxLayout(shell)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
         eyebrow = QLabel("只看眼前这一小块")
         eyebrow.setObjectName("eyebrow")
         title = QLabel("现在主要在做什么？")
@@ -823,7 +1004,7 @@ class TaskPanel(QDialog):
         actions.addWidget(save)
         for item in (eyebrow, title, self.task, self.step, progress_label, self.progress):
             layout.addWidget(item)
-        layout.addStretch()
+        layout.addSpacing(4)
         layout.addLayout(actions)
 
     def save(self):
@@ -847,14 +1028,15 @@ class FocusPanel(QDialog):
         self.session_status = None
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(380, 390)
+        self.setFixedSize(380, 350)
         self.setStyleSheet(PANEL_STYLE)
 
         shell = QFrame(self)
         shell.setObjectName("actionPanel")
-        shell.setGeometry(8, 8, 364, 374)
+        shell.setGeometry(8, 8, 364, 334)
+        self.shell = shell
         layout = QVBoxLayout(shell)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
         eyebrow = QLabel("由你开始，也随时可以停下")
@@ -866,7 +1048,7 @@ class FocusPanel(QDialog):
         self.status_label = QLabel("还没有开始")
         self.status_label.setObjectName("eyebrow")
 
-        self.duration = QComboBox()
+        self.duration = CleanComboBox()
         for minutes in (5, 12, 25, 45):
             self.duration.addItem(f"{minutes} 分钟", minutes)
         self.duration.addItem("自定义", None)
@@ -876,14 +1058,14 @@ class FocusPanel(QDialog):
         self.custom_duration.setValue(12)
         self.custom_duration.setSuffix(" 分钟")
         self.custom_duration.setEnabled(False)
+        self.custom_duration.hide()
         self.duration.currentIndexChanged.connect(
-            lambda: self.custom_duration.setEnabled(self.duration.currentData() is None)
+            self.update_duration_mode
         )
 
         self.start_button = QPushButton("开始 12 分钟")
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self.request_start)
-        self.duration.currentIndexChanged.connect(self.update_start_text)
         self.custom_duration.valueChanged.connect(self.update_start_text)
         self.pause_button = QPushButton("暂停")
         self.pause_button.clicked.connect(self.toggle_pause)
@@ -907,8 +1089,17 @@ class FocusPanel(QDialog):
         layout.addWidget(self.custom_duration)
         layout.addWidget(self.start_button)
         layout.addLayout(controls)
-        layout.addStretch()
+        layout.addSpacing(4)
         layout.addWidget(close_button)
+
+    def update_duration_mode(self):
+        custom = self.duration.currentData() is None
+        self.custom_duration.setEnabled(custom)
+        self.custom_duration.setVisible(custom)
+        panel_height = 384 if custom else 350
+        self.setFixedSize(380, panel_height)
+        self.shell.setGeometry(8, 8, 364, panel_height - 16)
+        self.update_start_text()
 
     def selected_minutes(self):
         return self.custom_duration.value() if self.duration.currentData() is None else int(self.duration.currentData())
@@ -955,15 +1146,15 @@ class FocusReviewPanel(QDialog):
         self.state = state
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(380, 360)
+        self.setFixedSize(380, 344)
         self.setStyleSheet(PANEL_STYLE)
 
         shell = QFrame(self)
         shell.setObjectName("actionPanel")
-        shell.setGeometry(8, 8, 364, 344)
+        shell.setGeometry(8, 8, 364, 328)
         layout = QVBoxLayout(shell)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(9)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
 
         eyebrow = QLabel("不评判完成度，只记下真实留下的东西")
         eyebrow.setObjectName("eyebrow")
@@ -990,7 +1181,7 @@ class FocusReviewPanel(QDialog):
         layout.addWidget(self.next_step)
         layout.addWidget(progress_label)
         layout.addWidget(self.progress)
-        layout.addStretch()
+        layout.addSpacing(4)
         layout.addWidget(save_button)
         layout.addWidget(dismiss_button)
 
@@ -1059,11 +1250,11 @@ class PetWindow(QWidget):
 
         self.menu = QFrame(self)
         self.menu.setObjectName("actionPanel")
-        self.menu.setGeometry(23, 17, 284, 190)
+        self.menu.setGeometry(15, 15, 300, 210)
         self.menu.setStyleSheet(PANEL_STYLE)
         menu_layout = QGridLayout(self.menu)
         menu_layout.setContentsMargins(13, 13, 13, 13)
-        menu_layout.setSpacing(7)
+        menu_layout.setSpacing(8)
         actions = [
             ("聊聊", "chat"),
             ("当前任务", "task"),
@@ -1507,6 +1698,13 @@ class YayanController:
         self.focus_review_panel = FocusReviewPanel(self.state)
         self.focus_review_panel.save_requested.connect(self.save_focus_review)
         self.focus_review_panel.dismiss_requested.connect(self.clear_focus_session)
+        self._panels = (
+            self.chat_panel,
+            self.settings_panel,
+            self.task_panel,
+            self.focus_panel,
+            self.focus_review_panel,
+        )
         self.focus_recovery_error = False
         self.focus_session = self.load_focus_session()
         self.focus_timer = QTimer(self.pet)
@@ -1517,6 +1715,9 @@ class YayanController:
         QTimer.singleShot(0, self.recover_focus_session)
 
     def place_panel(self, panel):
+        for other in self._panels:
+            if other is not panel:
+                other.hide()
         screen = QApplication.screenAt(self.pet.geometry().center()) or QApplication.primaryScreen()
         bounds = screen.availableGeometry()
         x = self.pet.x() - panel.width() - 12
@@ -1919,19 +2120,37 @@ def main():
         log_startup("quit-request", delivered=send_instance_command("quit"))
         return 0
 
+    instance_lock = None
     if not args.render_preview:
-        existing_instance = send_instance_command("raise")
-        log_startup("existing-instance-check", reachable=existing_instance)
-        if existing_instance:
-            return 0
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        instance_lock = QLockFile(str(INSTANCE_LOCK_PATH))
+        if not instance_lock.tryLock(0):
+            existing_instance = send_instance_command("raise")
+            log_startup("existing-instance-check", reachable=existing_instance)
+            if existing_instance:
+                return 0
+            # A previous process can exit between creating the lock and
+            # registering the IPC server. Let Qt remove the lock only when it
+            # can verify that the recorded owner is no longer running, then
+            # retry once so a stale lock cannot permanently block startup.
+            stale_removed = instance_lock.removeStaleLockFile()
+            log_startup("stale-lock-check", removed=stale_removed)
+            if not stale_removed or not instance_lock.tryLock(0):
+                return 1
 
     server = QLocalServer()
     if not args.render_preview:
+        # Only the process holding the lock may clean up a stale socket name.
         QLocalServer.removeServer(INSTANCE_NAME)
+        # Claim the single-instance channel atomically. Never remove an
+        # active server: doing so creates a race where two launchers both
+        # believe they are the primary instance.
         listening = server.listen(INSTANCE_NAME)
         log_startup("ipc-listen", listening=listening)
         if not listening:
-            return 1
+            raised = send_instance_command("raise")
+            log_startup("duplicate-instance", raised=raised)
+            return 0
 
     settings = load_json(PROJECT_DIR / "desktop" / "settings.json", {})
     if args.animal:

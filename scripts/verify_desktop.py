@@ -120,6 +120,21 @@ def verify_pet_interaction():
         focus.custom_duration.minimum() == 1
         and focus.custom_duration.maximum() == 120
     )
+    focus_custom_hidden_by_default = focus.custom_duration.isHidden() and focus.height() == 350
+    focus.duration.setCurrentIndex(4)
+    app.processEvents()
+    focus_custom_only_when_selected = (
+        not focus.custom_duration.isHidden()
+        and focus.custom_duration.isEnabled()
+        and focus.height() == 384
+    )
+    focus.duration.setCurrentIndex(1)
+    app.processEvents()
+    focus_custom_only_when_selected = (
+        focus_custom_only_when_selected
+        and focus.custom_duration.isHidden()
+        and focus.height() == 350
+    )
     focus_session = module.FocusSession.start(
         duration_minutes=12,
         task="完善芽砚",
@@ -188,24 +203,58 @@ def verify_pet_interaction():
     chat.add_message("你", "<测试>\n第二行")
     app.processEvents()
     message_texts = [label.text() for label in chat.rendered_bodies]
+    sent_messages = []
+    cancel_requests = []
+    chat.send_requested.connect(sent_messages.append)
+    chat.cancel_requested.connect(lambda: cancel_requests.append("stop"))
+    chat.input.setText("普通发送")
+    chat.send_button.click()
+    app.processEvents()
+
+    auxiliary_panels = (focus, review, module.TaskPanel({}), module.SettingsPanel())
+    auxiliary_preview_names = (
+        "focus-panel.png",
+        "focus-review-panel.png",
+        "task-panel.png",
+        "settings-panel.png",
+    )
+    panel_titles = []
+    panel_previews_written = []
+    for panel, preview_name in zip(auxiliary_panels, auxiliary_preview_names):
+        panel.show()
+        app.processEvents()
+        panel_titles.extend(panel.findChildren(module.QLabel, "title"))
+        panel_preview = PROJECT_DIR / "output" / "playwright" / preview_name
+        panel.grab().save(str(panel_preview))
+        panel_previews_written.append(
+            panel_preview.exists() and panel_preview.stat().st_size > 0
+        )
+
     chat_design = {
         "panel_object_name": chat.objectName() == "chatPanel",
         "default_page_ratio": default_size == (390, 570),
-        "font_family": chat.font().family() == "Microsoft YaHei UI",
-        "default_body_size": default_body_size == 14,
+        "font_family": chat.font().family() == "Noto Sans SC",
+        "display_font_family": chat.title.font().family() == "Noto Sans SC",
+        "panel_display_font_family": all(
+            label.font().family() == "Noto Sans SC" for label in panel_titles
+        ),
+        "panel_previews_written": all(panel_previews_written),
+        "default_body_size": default_body_size == 15,
         "responsive_font_size": small_body_size < default_body_size < large_body_size,
         "responsive_bubble_width": small_bubble_width
         < default_bubble_width
         < large_bubble_width,
         "message_font_family": all(
-            label.font().family() == "Microsoft YaHei UI" for label in chat.rendered_bodies
+            label.font().family() == "Noto Sans SC" for label in chat.rendered_bodies
         ),
         "safe_message_rendering": "<测试>\n第二行" in message_texts,
         "message_hierarchy": len(chat.rendered_bubbles) == 5,
         "stage_hierarchy": len(chat.rendered_stages) == 1,
         "auto_scroll_latest": auto_scroll_latest,
         "unified_composer": chat.input.objectName() == "chatInput"
-        and chat.send_button.objectName() == "chatSend",
+        and chat.send_button.objectName() == "chatSend"
+        and chat.stop_button.objectName() == "chatStop",
+        "send_only_sends": sent_messages == ["普通发送"] and not cancel_requests,
         "preview_written": chat_preview.exists() and chat_preview.stat().st_size > 0,
     }
     chat.start_streaming_message()
@@ -222,16 +271,29 @@ def verify_pet_interaction():
         and "已停止" in chat.messages[-1].get("text", "")
     )
     chat.set_busy(True)
+    busy_preview = PROJECT_DIR / "output" / "playwright" / "desktop-chat-busy.png"
+    chat.grab().save(str(busy_preview))
     chat_design["busy_state"] = (
         not chat.input.isEnabled()
-        and chat.send_button.isEnabled()
-        and chat.send_button.text() == "停止等待"
+        and not chat.send_button.isEnabled()
+        and chat.send_button.text() == "发送"
+        and chat.stop_button.isVisibleTo(chat)
+        and chat.stop_button.isEnabled()
+        and busy_preview.exists()
+        and busy_preview.stat().st_size > 0
     )
+    chat.send_button.click()
+    app.processEvents()
+    chat_design["disabled_send_does_not_cancel"] = not cancel_requests
+    chat.stop_button.click()
+    app.processEvents()
+    chat_design["explicit_stop_requests_cancel"] = cancel_requests == ["stop"]
     chat.set_busy(False)
     chat_design["ready_state"] = (
         chat.input.isEnabled()
         and chat.send_button.isEnabled()
         and chat.send_button.text() == "发送"
+        and chat.stop_button.isHidden()
     )
     voice_input_default_hidden = chat.mic.isHidden()
     chat.set_voice_input_enabled(True)
@@ -242,6 +304,8 @@ def verify_pet_interaction():
     translucent = pet.testAttribute(Qt.WA_TranslucentBackground)
     review.close()
     focus.close()
+    for panel in auxiliary_panels[2:]:
+        panel.close()
     chat.close()
     pet.close()
     return {
@@ -254,6 +318,8 @@ def verify_pet_interaction():
         "focus_default_duration": focus_default_duration,
         "focus_duration_choices": focus_duration_choices,
         "focus_custom_bounds": focus_custom_bounds,
+        "focus_custom_hidden_by_default": focus_custom_hidden_by_default,
+        "focus_custom_only_when_selected": focus_custom_only_when_selected,
         "focus_active_controls": focus_active_controls,
         "focus_review_user_owned": focus_review_user_owned,
         "voice_input_default_hidden": voice_input_default_hidden,

@@ -1,5 +1,6 @@
 import json
 import os
+from urllib.parse import urlparse
 from pathlib import Path
 
 import keyring
@@ -31,6 +32,41 @@ class YayanLLM:
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             user_settings = {}
         self.settings.update(user_settings)
+        normalized_url = self.normalize_base_url(self.settings.get("llm_base_url"))
+        if normalized_url:
+            self.settings["llm_base_url"] = normalized_url
+            if urlparse(normalized_url).hostname == "api.deepseek.com":
+                self.settings["api_mode"] = "chat"
+
+    @staticmethod
+    def normalize_base_url(base_url):
+        """Normalize known provider aliases without changing custom endpoints."""
+        value = str(base_url or "").strip().rstrip("/")
+        if not value:
+            return value
+        parsed = urlparse(value)
+        if parsed.hostname in {"platform.deepseek.com", "www.platform.deepseek.com"}:
+            return "https://api.deepseek.com"
+        return value
+
+    def _api_config(self):
+        base_url = (
+            os.environ.get("YAYAN_LLM_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL")
+            or self.settings.get("llm_base_url")
+        )
+        base_url = self.normalize_base_url(base_url)
+        requested_mode = os.environ.get("YAYAN_API_MODE") or self.settings.get(
+            "api_mode", "responses"
+        )
+        api_mode = requested_mode
+        hostname = urlparse(base_url).hostname if base_url else None
+        # DeepSeek's OpenAI-compatible endpoint exposes Chat Completions,
+        # not the newer Responses API. Keep existing settings usable and
+        # avoid making the user re-enter a valid key for a 405 response.
+        if hostname in {"api.deepseek.com", "platform.deepseek.com"}:
+            api_mode = "chat"
+        return base_url, api_mode
 
     def save_user_settings(self, values):
         allowed = {
@@ -49,6 +85,10 @@ class YayanLLM:
             key: value for key, value in self.settings.items() if key in allowed
         }
         current.update({key: value for key, value in values.items() if key in allowed})
+        if "llm_base_url" in current:
+            current["llm_base_url"] = self.normalize_base_url(current["llm_base_url"])
+        if urlparse(current.get("llm_base_url", "")).hostname == "api.deepseek.com":
+            current["api_mode"] = "chat"
         self.user_settings_path.parent.mkdir(parents=True, exist_ok=True)
         pending = self.user_settings_path.with_suffix(".pending")
         pending.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -60,6 +100,8 @@ class YayanLLM:
         if not api_key:
             return
         keyring.set_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT, api_key)
+        if not keyring.get_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT):
+            raise ModelUnavailable("API 密钥没有成功写入 Windows 凭据管理器，请检查系统凭据服务。")
         self.save_user_settings({"api_key_saved": True})
 
     def clear_api_key(self):
@@ -76,12 +118,16 @@ class YayanLLM:
         if os.environ.get("YAYAN_DISABLE_CREDENTIAL_STORE") == "1":
             return None
         if self.settings.get("api_key_saved"):
-            return keyring.get_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT)
+            try:
+                return keyring.get_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT)
+            except Exception:
+                return None
         return None
 
     @property
     def configured(self):
-        return bool(os.environ.get("OPENAI_API_KEY") or self.settings.get("api_key_saved"))
+        # The flag is only a hint; the credential store is the source of truth.
+        return bool(self._api_key())
 
     def _client(self):
         api_key = self._api_key()
@@ -90,11 +136,7 @@ class YayanLLM:
                 "我还没接上真正的大脑。请右键点我打开设置，"
                 "在本机配置 API 地址、密钥和模型。"
             )
-        base_url = (
-            os.environ.get("YAYAN_LLM_BASE_URL")
-            or os.environ.get("OPENAI_BASE_URL")
-            or self.settings.get("llm_base_url")
-        )
+        base_url, _ = self._api_config()
         options = {"api_key": api_key}
         if base_url:
             options["base_url"] = base_url
@@ -141,7 +183,7 @@ class YayanLLM:
         context_text = json.dumps(context or {}, ensure_ascii=False, indent=2)
         instructions = f"{self.persona}\n\n## 当前明确上下文\n{context_text}"
         trimmed = select_recent_messages(messages)
-        api_mode = os.environ.get("YAYAN_API_MODE") or self.settings.get("api_mode", "responses")
+        _, api_mode = self._api_config()
 
         if api_mode == "chat":
             try:
@@ -177,7 +219,7 @@ class YayanLLM:
         context_text = json.dumps(context or {}, ensure_ascii=False, indent=2)
         instructions = f"{self.persona}\n\n## 当前明确上下文\n{context_text}"
         trimmed = select_recent_messages(messages)
-        api_mode = os.environ.get("YAYAN_API_MODE") or self.settings.get("api_mode", "responses")
+        _, api_mode = self._api_config()
         parts = []
         callback = on_delta or (lambda _text: None)
         cancelled = should_cancel or (lambda: False)
