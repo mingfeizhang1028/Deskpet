@@ -27,6 +27,24 @@ output/
 # Local handoff records (not part of the public repository)
 docs/task_records/
 
+# Personal study notes (kept local for now; revisit before publishing)
+docs/learn-vpet/
+docs/learning/
+
+# AI assistant working files (session state, not part of the project)
+.superpowers/
+findings.md
+progress.md
+task_plan.md
+
+# VPet source excerpts kept locally as reference material for the notes above.
+# The originals live at github.com/LorisYounger/VPet (Apache 2.0).
+gcore.cs
+gcore2.cs
+mainlogic.cs
+mwc.cs
+vpet_paths.txt
+
 # Editors and operating systems
 .idea/
 .vscode/
