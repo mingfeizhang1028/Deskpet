@@ -2,41 +2,27 @@
 setlocal
 cd /d "%~dp0"
 
-set "YAYAN_PYTHON="
-set "YAYAN_PYTHONW="
-
-if exist ".venv\Scripts\python.exe" set "YAYAN_PYTHON=%CD%\.venv\Scripts\python.exe"
-if exist ".venv\Scripts\pythonw.exe" set "YAYAN_PYTHONW=%CD%\.venv\Scripts\pythonw.exe"
-
-if not defined YAYAN_PYTHON where python.exe >nul 2>nul && set "YAYAN_PYTHON=python.exe"
-if not defined YAYAN_PYTHONW where pythonw.exe >nul 2>nul && set "YAYAN_PYTHONW=pythonw.exe"
-
-if not defined YAYAN_PYTHON (
-  echo Python was not found. Create .venv and install requirements.txt first.
-  pause
-  exit /b 1
+rem Locate a system Python 3 (needed once to create the virtual environment).
+set "PY="
+where py >nul 2>nul && set "PY=py -3"
+if not defined PY (
+  where python >nul 2>nul && set "PY=python"
 )
-if not defined YAYAN_PYTHONW (
-  echo pythonw.exe was not found. Create .venv and install requirements.txt first.
+if not defined PY (
+  echo [Yayan] Python 3.10+ not found.
+  echo [Yayan] Install it from https://www.python.org/downloads/ and tick "Add python.exe to PATH".
   pause
   exit /b 1
 )
 
-if not exist "output\runtime" mkdir "output\runtime"
-"%YAYAN_PYTHON%" -c "import PyQt5, openai, keyring" >nul 2>"output\runtime\start-preflight.err.log"
-if errorlevel 1 (
-  echo Yayan's Python environment is incomplete.
-  echo Run: "%YAYAN_PYTHON%" -m pip install -r requirements.txt
-  type "output\runtime\start-preflight.err.log"
-  pause
-  exit /b 1
-)
-
->>"output\runtime\start-command.log" echo %date% %time% interpreter=%YAYAN_PYTHONW%
-start "" "%YAYAN_PYTHONW%" "%~dp0desktop\main.pyw"
-if errorlevel 1 (
+rem One-click bootstrap: create venv, install deps, fetch the renderer if missing,
+rem then hand over to the reliable launcher.
+%PY% "scripts\bootstrap_yayan.py"
+set "YAYAN_EXIT=%ERRORLEVEL%"
+if not "%YAYAN_EXIT%"=="0" (
   echo.
-  echo Yayan could not start. See output\runtime\desktop-startup.log.
+  echo [Yayan] Startup failed. The launcher kept the exact reason above.
+  echo [Yayan] Detailed logs: output\runtime\bootstrap.log, start-command.log and desktop-startup.log
   pause
 )
-endlocal
+endlocal & exit /b %YAYAN_EXIT%
