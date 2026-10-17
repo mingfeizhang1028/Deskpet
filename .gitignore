@@ -51,3 +51,39 @@ vpet_paths.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+.trae/
+.claude/
+
+# Local working directories: scratch, backups
+tmp/
+backup/
+
+# Godot engine download (dev tool only; the packaged pet ships via Releases)
+Godot_v4.7.2-stable_win64.exe/
+
+# Godot editor cache
+godot/.godot/
+
+# Godot dev-only asset folders (not referenced by anim_manifest.json)
+godot/assets/anim/
+godot/assets/anim-calibrated/
+godot/assets/anim-candidates/
+
+# Animation frames and source videos are distributed as a GitHub Release asset
+# to keep the repository small; they are placed back by scripts/fetch_renderer.py.
+# Keep the base portrait and icon (used by both renderers) in the repository.
+godot/assets/yayan-*
+!godot/assets/yayan-watercolor-base.png
+assets/yayan-*
+!assets/yayan-icon.svg
+!assets/yayan-watercolor-base.png
+assets/*.mp4
+
+# Asset QC / review pages (local working artifacts)
+assets/_*.html
+
+# Godot import stubs (regenerated when the project is opened)
+*.import
+
+# Export leftovers
+*.TMP
