@@ -1,5 +1,7 @@
 {
+  "runtime_version": 1,
   "default_animal": "watercolor",
+  "pet_renderer": "godot",
   "llm_model": "gpt-5.4-mini",
   "api_mode": "responses",
   "tts_model": "gpt-4o-mini-tts",
@@ -10,5 +12,7 @@
   "interaction_style": "gentle",
   "reminder_strength": 2,
   "memory_mode": "graded",
+  "low_risk_learning": "confirm",
+  "memory_candidate_prompts": true,
   "window_scale": 1.0
 }

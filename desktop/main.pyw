@@ -2,7 +2,9 @@ import argparse
 import ctypes
 import json
 import math
+import os
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -10,12 +12,14 @@ import traceback
 from pathlib import Path
 
 from PyQt5.QtCore import (
+    QEvent,
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
     QProcess,
     QRect,
     QLockFile,
+    QObject,
     QThread,
     QTimer,
     QUrl,
@@ -64,10 +68,24 @@ from PyQt5.QtWidgets import (
 from chat_stream import ChatCancelled, select_recent_messages
 from focus_session import FocusSession
 from llm_client import ModelUnavailable, YayanLLM
+from memory_store import MemoryStore, DatabaseUnavailable
+from conversation_manager import ConversationManager
+from memory_policy import MemoryPolicy
+from memory_extractor import MemoryExtractor
+from memory_search import MemorySearch
+from emotion_service import EmotionService
+from emotion_policy import map_to_pet
+from pet_bridge import PetBridge
+from contracts import make_pet_command
+from instance_guard import inspect_lock, remove_verified_lock
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 RUNTIME_DIR = PROJECT_DIR / "output" / "runtime"
+# 优先使用导出的独立宠物程序（无需安装 Godot）；否则回退到开发用引擎本体。
+GODOT_PACKAGED_EXE = PROJECT_DIR / "output" / "godot" / "YayanPet.exe"
+GODOT_DEV_EXE = PROJECT_DIR / "Godot_v4.7.2-stable_win64.exe" / "Godot_v4.7.2-stable_win64_console.exe"
+CREATE_NO_WINDOW = 0x08000000
 DESKTOP_STATE_PATH = RUNTIME_DIR / "desktop-state.json"
 FOCUS_STATE_PATH = RUNTIME_DIR / "focus-session.json"
 AUDIO_INPUT_PATH = RUNTIME_DIR / "voice-input.wav"
@@ -77,12 +95,22 @@ STARTUP_LOG_PATH = RUNTIME_DIR / "desktop-startup.log"
 INSTANCE_NAME = "YayanDesktopPet-v2"
 INSTANCE_LOCK_PATH = RUNTIME_DIR / "yayan-single-instance.lock"
 
+# 宠物渲染回退开关（步骤 1）：缺失或非法配置一律回退旧版 PyQt 整图宠物，
+# 保证旧版程序始终可运行。Godot 渲染在步骤 4 接入。
+PET_RENDERER_VALUES = ("pyqt", "godot")
+PET_RENDERER_FALLBACK = "pyqt"
+
+
+def resolve_pet_renderer(settings):
+    renderer = settings.get("pet_renderer", PET_RENDERER_FALLBACK)
+    return renderer if renderer in PET_RENDERER_VALUES else PET_RENDERER_FALLBACK
+
 
 PANEL_STYLE = """
 QDialog, QFrame#actionPanel {
-    background: #f4f7f6;
-    color: #263a36;
-    border: 1px solid #cbd8d4;
+    background: #F7F0E7;
+    color: #3A2B23;
+    border: 1px solid #D8C3AF;
     border-radius: 12px;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 13px;
@@ -92,18 +120,18 @@ QFrame#actionPanel QLabel {
     font-size: 14px;
 }
 QFrame#actionPanel QLabel#title {
-    color: #1f4039;
+    color: #3A2B23;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 18px;
     font-weight: 700;
 }
-QLabel#eyebrow { color: #6b837d; font-size: 11px; }
+QLabel#eyebrow { color: #9A7B63; font-size: 11px; }
 QPushButton {
     min-height: 38px;
     padding: 0 13px;
-    color: #294b43;
-    background: #e8efed;
-    border: 1px solid #cbdad5;
+    color: #5C4030;
+    background: #EADDCF;
+    border: 1px solid #D8C3AF;
     border-radius: 8px;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 14px;
@@ -112,27 +140,27 @@ QPushButton[role="settingsAction"] {
     min-height: 42px;
     max-height: 42px;
 }
-QPushButton:hover { background: #dce9e5; border-color: #a9c2ba; }
-QPushButton#primary { color: white; background: #285b50; border: 1px solid #285b50; }
-QPushButton#primary:hover { background: #1f4d43; }
-QPushButton#quiet { background: #eef3f2; color: #4d6861; }
+QPushButton:hover { background: #E0D0BF; border-color: #C9B29A; }
+QPushButton#primary { color: white; background: #7B5A45; border: 1px solid #7B5A45; }
+QPushButton#primary:hover { background: #6B4A37; }
+QPushButton#quiet { background: #EFE6DB; color: #7B5A45; }
 QLineEdit, QTextBrowser {
     min-height: 38px;
     padding: 0 12px;
-    color: #263a36;
-    background: #ffffff;
-    border: 1px solid #c7d5d1;
+    color: #3A2B23;
+    background: #FFFDF8;
+    border: 1px solid #D8C3AF;
     border-radius: 7px;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 14px;
-    selection-background-color: #bcd9d1;
+    selection-background-color: #EADDCF;
 }
 QComboBox, QSpinBox {
     min-height: 38px;
     padding: 0 12px;
-    color: #263a36;
-    background: #ffffff;
-    border: 1px solid #c7d5d1;
+    color: #3A2B23;
+    background: #FFFDF8;
+    border: 1px solid #D8C3AF;
     border-radius: 7px;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 14px;
@@ -140,8 +168,8 @@ QComboBox, QSpinBox {
 QComboBox::drop-down {
     width: 28px;
     border: none;
-    border-left: 1px solid #d9e3e0;
-    background: #f7faf9;
+    border-left: 1px solid #D8C3AF;
+    background: #F7F0E7;
     border-top-right-radius: 7px;
     border-bottom-right-radius: 7px;
 }
@@ -149,40 +177,40 @@ QComboBox::down-arrow {
     image: none;
 }
 QComboBox QAbstractItemView {
-    color: #263a36;
-    background: #ffffff;
-    border: 1px solid #c7d5d1;
-    selection-background-color: #dcebe7;
-    selection-color: #1f4039;
+    color: #3A2B23;
+    background: #FFFDF8;
+    border: 1px solid #D8C3AF;
+    selection-background-color: #EADDCF;
+    selection-color: #3A2B23;
     padding: 4px;
 }
 QCheckBox {
     min-height: 30px;
-    color: #46635b;
+    color: #5C4030;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 13px;
 }
 QLabel#fieldLabel {
-    color: #45645c;
+    color: #5C4030;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 14px;
     font-weight: 600;
 }
 QSlider::groove:horizontal {
     height: 4px;
-    background: #d6e2df;
+    background: #EADDCF;
     border-radius: 2px;
 }
 QSlider::sub-page:horizontal {
-    background: #5b8d80;
+    background: #B77953;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
     width: 14px;
     height: 14px;
     margin: -5px 0;
-    background: #f4f7f6;
-    border: 2px solid #5b8d80;
+    background: #FFFDF8;
+    border: 2px solid #B77953;
     border-radius: 7px;
 }
 """
@@ -195,61 +223,61 @@ QDialog#chatPanel {
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
 }
 QFrame#chatShell {
-    color: #263a36;
-    background: #f1f5f4;
-    border: 1px solid #bfcec9;
+    color: #3A2B23;
+    background: #F7F0E7;
+    border: 1px solid #D8C3AF;
     border-radius: 16px;
 }
 QLabel#chatTitle {
-    color: #1f4039;
+    color: #7B5A45;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-weight: 700;
     letter-spacing: 0px;
 }
 QLabel#chatPresence {
-    color: #6d7e79;
+    color: #7B5A45;
 }
 QLabel#presenceDot {
-    color: #4f9d88;
+    color: #7B5A45;
 }
 QPushButton#chatHeaderButton {
     padding: 0 8px;
-    color: #58706a;
+    color: #7B5A45;
     background: transparent;
     border: 1px solid transparent;
     border-radius: 7px;
 }
 QPushButton#chatHeaderButton:hover {
-    color: #244f45;
-    background: #e1ebe8;
-    border-color: #c0d3cd;
+    color: #3A2B23;
+    background: #EADDCF;
+    border-color: #D8C3AF;
 }
 QScrollArea#chatLog {
-    color: #263a36;
-    background: #f7faf9;
-    border: 1px solid #d1ddda;
+    color: #3A2B23;
+    background: #F2E8DA;
+    border: 1px solid #D8C3AF;
     border-radius: 12px;
 }
 QWidget#chatMessageView { background: transparent; }
 QFrame#chatWelcome {
-    background: #e8f0ed;
-    border: 1px solid #d0dfda;
+    background: #EADDCF;
+    border: 1px solid #D8C3AF;
     border-radius: 14px;
 }
 QLabel#chatWelcomeStatus {
-    color: #4f8c7d;
+    color: #7B5A45;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 12px;
     font-weight: 600;
 }
 QLabel#chatWelcomeTitle {
-    color: #285b50;
+    color: #7B5A45;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 17px;
     font-weight: 700;
 }
 QLabel#chatWelcomeCopy {
-    color: #6d7e79;
+    color: #7B5A45;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 13px;
 }
@@ -257,29 +285,29 @@ QFrame#petBubble, QFrame#userBubble {
     border-radius: 8px;
 }
 QFrame#petBubble {
-    background: #e8efed;
-    border: 1px solid #d2dfdb;
-    border-left: 3px solid #6d9b8f;
+    background: #EADDCF;
+    border: 1px solid #D8C3AF;
+    border-left: 3px solid #B77953;
 }
 QFrame#userBubble {
-    background: #dce8e5;
-    border: 1px solid #c8dad5;
-    border-right: 3px solid #3f7568;
+    background: #F2E8DA;
+    border: 1px solid #D8C3AF;
+    border-right: 3px solid #7B5A45;
 }
 QLabel#messageSpeakerPet, QLabel#messageSpeakerUser {
     background: transparent;
     border: none;
     font-weight: 600;
 }
-QLabel#messageSpeakerPet { color: #4f756b; }
-QLabel#messageSpeakerUser { color: #4b7168; }
+QLabel#messageSpeakerPet { color: #7B5A45; }
+QLabel#messageSpeakerUser { color: #7B5A45; }
 QLabel#messageStage {
-    color: #6a817b;
+    color: #7B5A45;
     background: transparent;
     border: none;
 }
 QLabel#messageBody {
-    color: #263a36;
+    color: #3A2B23;
     background: transparent;
     border: none;
 }
@@ -290,58 +318,58 @@ QScrollBar:vertical {
 }
 QScrollBar::handle:vertical {
     min-height: 30px;
-    background: #a9c2ba;
+    background: #D8C3AF;
     border-radius: 2px;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
 QFrame#chatComposer {
-    background: #ffffff;
-    border: 1px solid #c5d4d0;
+    background: #F7F0E7;
+    border: 1px solid #D8C3AF;
     border-radius: 13px;
 }
 QLineEdit#chatInput {
     padding: 0 7px;
-    color: #263a36;
+    color: #3A2B23;
     background: transparent;
     border: none;
     font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
-    selection-color: #1f4039;
-    selection-background-color: #cfe3de;
+    selection-color: #3A2B23;
+    selection-background-color: #EADDCF;
 }
 QLineEdit#chatInput:disabled {
-    color: #91a099;
+    color: #D8C3AF;
 }
 QPushButton#chatSend {
     padding: 0 13px;
     color: white;
-    background: #285b50;
+    background: #7B5A45;
     border: none;
     border-radius: 10px;
     font-weight: 600;
 }
-QPushButton#chatSend:hover { background: #1f4d43; }
-QPushButton#chatSend:pressed { background: #183f37; }
-QPushButton#chatSend:disabled { color: #e8eeea; background: #90a8a1; }
+QPushButton#chatSend:hover { background: #6B4A37; }
+QPushButton#chatSend:pressed { background: #6B4A37; }
+QPushButton#chatSend:disabled { color: #EADDCF; background: #D8C3AF; }
 QPushButton#chatStop {
     padding: 0 12px;
-    color: #7b5048;
-    background: #f2e7e4;
-    border: 1px solid #dfc9c3;
+    color: #7B5A45;
+    background: #EADDCF;
+    border: 1px solid #D8C3AF;
     border-radius: 10px;
     font-weight: 600;
 }
-QPushButton#chatStop:hover { background: #ead6d0; }
-QPushButton#chatStop:pressed { background: #e1c5bd; }
+QPushButton#chatStop:hover { background: #F2E8DA; }
+QPushButton#chatStop:pressed { background: #D8C3AF; }
 QPushButton#chatMic {
     padding: 0 12px;
-    color: #466b62;
-    background: #e7efed;
-    border: 1px solid #c8dad5;
+    color: #7B5A45;
+    background: #EADDCF;
+    border: 1px solid #D8C3AF;
     border-radius: 9px;
 }
-QPushButton#chatMic:hover { background: #d9e9e4; }
+QPushButton#chatMic:hover { background: #F2E8DA; }
 """
 
 
@@ -374,7 +402,7 @@ class CleanComboBox(QComboBox):
         )
         center = arrow_rect.center()
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#628079"))
+        painter.setBrush(QColor("#B77953"))
         painter.drawPolygon(
             QPolygon(
                 [
@@ -434,6 +462,49 @@ class WorkThread(QThread):
             self.failed.emit(self.mode, str(error))
         except Exception as error:
             self.failed.emit(self.mode, f"发生未预期错误：{type(error).__name__}")
+
+
+class PanelDragFilter(QObject):
+    """无边框面板：按住顶部标题区可拖动（避开按钮）。"""
+
+    drag_finished = pyqtSignal()
+
+    HEADER_BAND = 56
+
+    def __init__(self, panel: QWidget, header_band: int = HEADER_BAND):
+        super().__init__(panel)
+        self._panel = panel
+        self._header_band = header_band
+        self._offset = None
+
+    def eventFilter(self, obj, event):
+        panel = self._panel
+        etype = event.type()
+        if etype == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            if self._can_drag(event.globalPos()):
+                self._offset = event.globalPos() - panel.frameGeometry().topLeft()
+                event.accept()
+                return True
+        elif etype == QEvent.MouseMove and self._offset is not None:
+            panel.move(event.globalPos() - self._offset)
+            event.accept()
+            return True
+        elif etype == QEvent.MouseButtonRelease and self._offset is not None:
+            self._offset = None
+            self.drag_finished.emit()
+            event.accept()
+            return True
+        return False
+
+    def _can_drag(self, global_pos) -> bool:
+        local = self._panel.mapFromGlobal(global_pos)
+        if local.y() > self._header_band:
+            return False
+        for child in self._panel.findChildren(QPushButton):
+            button_rect = QRect(child.mapTo(self._panel, QPoint(0, 0)), child.size())
+            if child.isVisible() and button_rect.contains(local):
+                return False
+        return True
 
 
 class ChatPanel(QDialog):
@@ -496,6 +567,8 @@ class ChatPanel(QDialog):
         self.settings_button = QPushButton("设置")
         self.settings_button.setObjectName("chatHeaderButton")
         self.settings_button.clicked.connect(self.settings_requested.emit)
+        self.settings_button.setAutoDefault(False)
+        self.settings_button.setDefault(False)
         header.addLayout(title_box)
         header.addStretch()
         header.addWidget(self.settings_button)
@@ -520,6 +593,7 @@ class ChatPanel(QDialog):
         self.input.setObjectName("chatInput")
         self.input.setPlaceholderText("和芽砚说点什么……")
         self.input.returnPressed.connect(self.send)
+        self.input.installEventFilter(self)
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
@@ -538,6 +612,8 @@ class ChatPanel(QDialog):
         self.send_button = QPushButton("发送")
         self.send_button.setObjectName("chatSend")
         self.send_button.clicked.connect(self.send)
+        self.send_button.setAutoDefault(True)
+        self.send_button.setDefault(True)
         self.stop_button = QPushButton("停止生成")
         self.stop_button.setObjectName("chatStop")
         self.stop_button.clicked.connect(self.cancel_requested.emit)
@@ -609,6 +685,14 @@ class ChatPanel(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.apply_adaptive_layout()
+
+    def eventFilter(self, watched, event):
+        if watched is self.input and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.send()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -811,17 +895,18 @@ class SettingsPanel(QDialog):
     clear_key_requested = pyqtSignal()
     restart_requested = pyqtSignal()
     quit_requested = pyqtSignal()
+    memory_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(460, 620)
+        self.setFixedSize(540, 680)
         self.setStyleSheet(PANEL_STYLE)
 
         shell = QFrame(self)
         shell.setObjectName("actionPanel")
-        shell.setGeometry(8, 8, 444, 604)
+        shell.setGeometry(8, 8, 524, 664)
         layout = QVBoxLayout(shell)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(8)
@@ -830,8 +915,10 @@ class SettingsPanel(QDialog):
         title_box = QVBoxLayout()
         eyebrow = QLabel("只在这台电脑上生效")
         eyebrow.setObjectName("eyebrow")
+        eyebrow.setStyleSheet("color: #9A7B63; font-size: 11px;")
         title = QLabel("芽砚的后台设置")
         title.setObjectName("title")
+        title.setStyleSheet("color: #3A2B23; font-size: 18px; font-weight: 700;")
         title_box.addWidget(eyebrow)
         title_box.addWidget(title)
         close_button = QPushButton("×")
@@ -866,6 +953,10 @@ class SettingsPanel(QDialog):
         self.memory_mode = CleanComboBox()
         self.memory_mode.addItem("分级记忆", "graded")
         self.memory_mode.addItem("仅当前对话", "session")
+        self.low_risk_learning = CleanComboBox()
+        self.low_risk_learning.addItem("低风险先询问", "confirm")
+        self.low_risk_learning.addItem("低风险自动记忆", "auto")
+        self.low_risk_learning.addItem("低风险不记忆", "off")
         self.reminder_strength = QSlider(Qt.Horizontal)
         self.reminder_strength.setRange(1, 5)
         self.reminder_strength.setValue(2)
@@ -874,6 +965,7 @@ class SettingsPanel(QDialog):
         def add_field(label_text, widget, row, column=0, span=1):
             label = QLabel(label_text)
             label.setObjectName("fieldLabel")
+            label.setStyleSheet("color: #5C4030; font-size: 14px; font-weight: 600;")
             label.setFixedHeight(18)
             label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             form.addWidget(label, row, column, 1, span)
@@ -887,8 +979,9 @@ class SettingsPanel(QDialog):
         add_field("声音", self.voice, 6)
         add_field("相处语气", self.interaction_style, 6, 1)
         add_field("记忆方式", self.memory_mode, 8)
+        add_field("低风险偏好", self.low_risk_learning, 8, 1)
         self.reminder_strength.setMinimumHeight(40)
-        add_field("提醒力度", self.reminder_strength, 8, 1)
+        add_field("提醒力度", self.reminder_strength, 10, span=2)
 
         key_note = QLabel("密钥保存到 Windows 凭据管理器，不写入项目文件。")
         key_note.setWordWrap(True)
@@ -896,29 +989,39 @@ class SettingsPanel(QDialog):
         clear_key = QPushButton("清除密钥")
         clear_key.setObjectName("settingsAction")
         clear_key.setProperty("role", "settingsAction")
-        clear_key.setFixedSize(92, 40)
+        clear_key.setMinimumWidth(86)
+        clear_key.setFixedHeight(40)
         clear_key.clicked.connect(self.clear_key_requested.emit)
         restart = QPushButton("重启芽砚")
         restart.setObjectName("quiet")
         restart.setProperty("role", "settingsAction")
-        restart.setFixedSize(92, 40)
+        restart.setMinimumWidth(86)
+        restart.setFixedHeight(40)
         restart.clicked.connect(self.restart_requested.emit)
         save = QPushButton("保存设置")
         save.setObjectName("primary")
         save.setProperty("role", "settingsAction")
-        save.setFixedSize(92, 40)
+        save.setMinimumWidth(86)
+        save.setFixedHeight(40)
         save.clicked.connect(self.save)
+        memory = QPushButton("管理记忆")
+        memory.setObjectName("quiet")
+        memory.setProperty("role", "settingsAction")
+        memory.setMinimumWidth(86)
+        memory.setFixedHeight(40)
+        memory.clicked.connect(lambda: self.memory_requested.emit("manage"))
         actions = QHBoxLayout()
-        actions.setSpacing(8)
-        actions.addStretch()
+        actions.setSpacing(6)
+        actions.setContentsMargins(0, 0, 0, 0)
         actions.addWidget(clear_key)
+        actions.addWidget(memory)
         actions.addWidget(restart)
         actions.addWidget(save)
-        actions.addStretch()
         quit_button = QPushButton("退出芽砚")
         quit_button.setObjectName("quiet")
         quit_button.setProperty("role", "settingsAction")
-        quit_button.setFixedSize(92, 40)
+        quit_button.setMinimumWidth(86)
+        quit_button.setFixedHeight(40)
         quit_button.clicked.connect(self.quit_requested.emit)
         actions.addWidget(quit_button)
 
@@ -937,6 +1040,7 @@ class SettingsPanel(QDialog):
         self._select(self.voice, settings.get("tts_voice", "shimmer"))
         self._select(self.interaction_style, settings.get("interaction_style", "gentle"))
         self._select(self.memory_mode, settings.get("memory_mode", "graded"))
+        self._select(self.low_risk_learning, settings.get("low_risk_learning", "confirm"))
         self.reminder_strength.setValue(int(settings.get("reminder_strength", 2)))
         self.voice_input_enabled.setChecked(bool(settings.get("voice_input_enabled", False)))
         self.speak_replies.setChecked(bool(settings.get("speak_replies", True)))
@@ -955,6 +1059,7 @@ class SettingsPanel(QDialog):
             "tts_voice": self.voice.currentData(),
             "interaction_style": self.interaction_style.currentData(),
             "memory_mode": self.memory_mode.currentData(),
+            "low_risk_learning": self.low_risk_learning.currentData(),
             "reminder_strength": self.reminder_strength.value(),
             "voice_input_enabled": self.voice_input_enabled.isChecked(),
             "speak_replies": self.speak_replies.isChecked(),
@@ -1661,20 +1766,111 @@ class PetWindow(QWidget):
         painter.drawText(rect.adjusted(13, 8, -13, -8), Qt.AlignCenter | Qt.TextWordWrap, self.bubble_text)
 
 
+class BridgePetWindow(PetWindow):
+    """把 Python 侧的 set_mood 同步转发给 Godot（set_state 命令）。
+
+    聊天/专注等流程仍走原有 self.pet.set_mood(...)；Godot 通过 bridge 收到后
+    切换对应动画。bridge 未启动或掉线时静默忽略，绝不影响聊天主流程。
+    """
+
+    def __init__(self, animal: str, bridge):
+        super().__init__(animal)
+        self._bridge = bridge
+
+    def set_mood(self, mood: str) -> None:
+        super().set_mood(mood)
+        if self._bridge is None:
+            return
+        try:
+            self._bridge.send_command(make_pet_command("set_state", state=mood))
+        except Exception:
+            pass
+
+
+class PetEventDispatcher(QObject):
+    received = pyqtSignal(object)
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+        self.received.connect(self._dispatch, Qt.QueuedConnection)
+
+    def _dispatch(self, event):
+        self._callback(event)
+
+
 class YayanController:
     def __init__(self, app, settings):
         self.app = app
         self.settings = settings
         self.state = load_json(
             DESKTOP_STATE_PATH,
-            {"animal": settings.get("default_animal", "watercolor"), "task": "", "next_step": "", "progress": 0},
+            {
+                "animal": settings.get("default_animal", "watercolor"),
+                "task": "",
+                "next_step": "",
+                "progress": 0,
+                "pet_window_position": None,
+                "pet_window_screen": None,
+                "chat_panel_position": None,
+            },
         )
         self.client = YayanLLM(PROJECT_DIR)
         self.settings = self.client.settings
+        self.memory_store = None
+        self.conversation = None
+        self.memory_search = None
+        self.memory_policy = MemoryPolicy(self.settings)
+        self.memory_extractor = MemoryExtractor(self.client)
+        self.emotion_service = EmotionService()
+        self.message_generation = 0
+        self.user_emotion = None
+        self.interaction_state = "idle"
+        self.activity_state = "idle"
+        self._last_pet_screen_position = None
+        try:
+            self.memory_store = MemoryStore(RUNTIME_DIR / "memory.sqlite3")
+            self.conversation = ConversationManager(self.memory_store, self.settings)
+            self.conversation.restore_or_create()
+            self.memory_search = MemorySearch(self.memory_store)
+        except (DatabaseUnavailable, OSError):
+            self.memory_store = None
+        self.pet_renderer = resolve_pet_renderer(self.settings)
         self.messages = []
+        if self.conversation is not None:
+            self.messages = self.conversation.recent()
         self.workers = []
         self.chat_worker = None
-        self.pet = PetWindow("watercolor")
+        self.pet_events = PetEventDispatcher(self._handle_pet_event)
+        self.pet_bridge = PetBridge(on_event=self.on_pet_event)
+        bridge_started = self.pet_bridge.start()
+        if bridge_started:
+            # 把实际端口写给 Godot（bridge_client.gd 读取）。
+            try:
+                port_file = RUNTIME_DIR / "bridge-port.txt"
+                port_file.parent.mkdir(parents=True, exist_ok=True)
+                port_file.write_text(str(self.pet_bridge.port), encoding="utf-8")
+            except OSError:
+                pass
+        self.pet = BridgePetWindow("watercolor", self.pet_bridge if bridge_started else None)
+        # Godot 渲染：隐藏旧的 PyQt 猫，只留面板 + Godot 猫；并自动拉起 Godot。
+        # 若 Godot 可执行文件缺失或启动失败，自动回退到 PyQt 猫，保证始终有宠物。
+        if self.pet_renderer == "godot":
+            self.godot_proc = None
+            launched = self._launch_godot() if bridge_started else False
+            if launched:
+                self.pet.hide()
+            else:
+                self.pet_renderer = "pyqt"
+                log_startup("pet-renderer-fallback", active="pyqt", reason="godot-unavailable")
+        else:
+            self.godot_proc = None
+        self.emotion_service.slow_detector = self.slow_emotion_detect
+        self.pending_slow_emotion = None
+        self.emotion_timer = QTimer(self.pet)
+        self.emotion_timer.setInterval(120)
+        self.emotion_timer.timeout.connect(self.apply_slow_emotion)
+        self.emotion_timer.start()
         self.pet.action_requested.connect(self.handle_action)
         self.pet.animal_changed.connect(self.save_animal)
         self.chat_panel = ChatPanel()
@@ -1688,6 +1884,7 @@ class YayanController:
         self.settings_panel.clear_key_requested.connect(self.clear_api_key)
         self.settings_panel.restart_requested.connect(self.restart_application)
         self.settings_panel.quit_requested.connect(self.app.quit)
+        self.settings_panel.memory_requested.connect(self.manage_memory)
         self.task_panel = TaskPanel(self.state)
         self.task_panel.changed.connect(self.save_task)
         self.focus_panel = FocusPanel()
@@ -1711,20 +1908,154 @@ class YayanController:
         self.focus_timer.setInterval(1000)
         self.focus_timer.timeout.connect(self.update_focus_session)
         self.recorder = None
-        self.pet.show()
+        if self.pet_renderer != "godot":
+            self.pet.show()
         QTimer.singleShot(0, self.recover_focus_session)
+
+    def _launch_godot(self) -> bool:
+        """拉起宠物窗口（隐藏控制台，输出写日志）。失败不影响主程序。
+        优先用导出的独立程序 YayanPet.exe（免装 Godot）；没有时回退开发引擎。
+        返回是否成功拉起，供调用方决定是否回退到 PyQt 渲染。"""
+        if GODOT_PACKAGED_EXE.exists():
+            exe = GODOT_PACKAGED_EXE
+        elif GODOT_DEV_EXE.exists():
+            exe = GODOT_DEV_EXE
+        else:
+            log_startup("godot-launch", error="missing-exe")
+            return False
+        try:
+            log_file = (RUNTIME_DIR / "godot-stdout.log").open("ab", buffering=0)
+        except OSError:
+            log_file = subprocess.DEVNULL
+        args = [str(exe)]
+        if exe == GODOT_DEV_EXE:
+            args += ["--path", str(PROJECT_DIR / "godot")]
+        try:
+            self.godot_proc = subprocess.Popen(
+                args,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            log_startup("godot-launch", exe=exe.name, pid=self.godot_proc.pid)
+            return True
+        except OSError as error:
+            log_startup("godot-launch", error=str(error))
+            self.godot_proc = None
+            return False
+
+    def on_pet_event(self, event):
+        """bridge 回调（后台线程）：Godot 宠物事件 → 切到主线程处理。"""
+        if not isinstance(event, dict):
+            return
+        self.pet_events.received.emit(event)
+
+    def _handle_pet_event(self, event):
+        """所有 Qt 窗口与本地状态更新都在主线程进行。"""
+        window_position = event.get("window_position")
+        if isinstance(window_position, dict) and "x" in window_position and "y" in window_position:
+            self.state["pet_window_position"] = {
+                "x": int(window_position["x"]),
+                "y": int(window_position["y"]),
+            }
+            if event.get("event") in {"clicked", "drag_end"}:
+                save_json(DESKTOP_STATE_PATH, self.state)
+        screen_position = event.get("screen_position")
+        if isinstance(screen_position, dict) and "x" in screen_position and "y" in screen_position:
+            self._last_pet_screen_position = (int(screen_position["x"]), int(screen_position["y"]))
+        if event.get("event") == "clicked":
+            self.handle_action("chat")
+
+    def shutdown(self):
+        """主程序退出时关掉 Godot，避免留下孤儿窗口。"""
+        proc = getattr(self, "godot_proc", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                log_startup("godot-shutdown", pid=proc.pid)
+            except OSError:
+                pass
+
+    def _save_panel_position(self, panel):
+        if not panel.isVisible():
+            return
+        if panel is self.chat_panel:
+            key = "chat_panel_position"
+        elif panel is self.settings_panel:
+            key = "settings_panel_position"
+        else:
+            return
+        position = panel.pos()
+        self.state[key] = {"x": position.x(), "y": position.y()}
+        save_json(DESKTOP_STATE_PATH, self.state)
 
     def place_panel(self, panel):
         for other in self._panels:
             if other is not panel:
                 other.hide()
-        screen = QApplication.screenAt(self.pet.geometry().center()) or QApplication.primaryScreen()
-        bounds = screen.availableGeometry()
-        x = self.pet.x() - panel.width() - 12
-        if x < bounds.left():
-            x = self.pet.x() + self.pet.width() + 12
-        y = max(bounds.top() + 10, min(self.pet.y() - 30, bounds.bottom() - panel.height() - 10))
+        # 给无边框面板装上"按住顶部可拖动"（只装一次）。
+        if not hasattr(panel, "_drag_filter"):
+            panel._drag_filter = PanelDragFilter(
+                panel, header_band=72 if panel is self.settings_panel else 56
+            )
+            panel.installEventFilter(panel._drag_filter)
+            for child in panel.findChildren(QWidget):
+                child.installEventFilter(panel._drag_filter)
+            panel._drag_filter.drag_finished.connect(lambda p=panel: self._save_panel_position(p))
+        position_key = None
+        if panel is self.chat_panel:
+            position_key = "chat_panel_position"
+        elif panel is self.settings_panel:
+            position_key = "settings_panel_position"
+        saved_position = self.state.get(position_key) if position_key else None
+        if panel is self.chat_panel and position_key:
+            # 每次从猫打开聊天都重新贴到猫旁边；本次拖动仍保持到下一次打开。
+            anchor = self._last_pet_screen_position
+            if anchor is not None:
+                screen = QApplication.screenAt(QPoint(anchor[0], anchor[1])) or QApplication.primaryScreen()
+                bounds = screen.availableGeometry()
+                x = anchor[0] + 18
+                y = anchor[1] - panel.height() // 2
+                if x + panel.width() > bounds.right() - 10:
+                    x = anchor[0] - panel.width() - 18
+            elif saved_position:
+                x = int(saved_position.get("x", 0))
+                y = int(saved_position.get("y", 0))
+                screen = QApplication.screenAt(QPoint(x, y)) or QApplication.primaryScreen()
+                bounds = screen.availableGeometry()
+            else:
+                screen = QApplication.primaryScreen()
+                bounds = screen.availableGeometry()
+                x = bounds.left() + 12
+                y = bounds.top() + 12
+        elif position_key and saved_position and not getattr(panel, "_has_position", False):
+            x = int(saved_position.get("x", 0))
+            y = int(saved_position.get("y", 0))
+            screen = QApplication.screenAt(QPoint(x, y)) or QApplication.primaryScreen()
+            bounds = screen.availableGeometry()
+        elif position_key and not getattr(panel, "_has_position", False):
+            anchor = self._last_pet_screen_position
+            if anchor is not None:
+                screen = QApplication.screenAt(QPoint(anchor[0], anchor[1])) or QApplication.primaryScreen()
+                bounds = screen.availableGeometry()
+                x = anchor[0] + 18
+                y = anchor[1] - panel.height() // 2
+                if x + panel.width() > bounds.right() - 10:
+                    x = anchor[0] - panel.width() - 18
+            else:
+                screen = QApplication.primaryScreen()
+                bounds = screen.availableGeometry()
+                x = bounds.left() + 12
+                y = bounds.top() + 12
+        else:
+            screen = QApplication.screenAt(panel.frameGeometry().center()) or QApplication.primaryScreen()
+            bounds = screen.availableGeometry()
+            x, y = panel.x(), panel.y()
+        x = max(bounds.left() + 10, min(x, bounds.right() - panel.width() - 10))
+        y = max(bounds.top() + 10, min(y, bounds.bottom() - panel.height() - 10))
         panel.move(x, y)
+        if position_key:
+            panel._has_position = True
         panel.show()
         panel.raise_()
         panel.activateWindow()
@@ -1905,7 +2236,7 @@ class YayanController:
         self.pet.say("记住啦。不是催你，是替你把线头放在看得见的地方。", 3300)
 
     def context(self):
-        return {
+        result = {
             "current_task": self.state.get("task", ""),
             "next_step": self.state.get("next_step", ""),
             "progress_percent": self.state.get("progress", 0),
@@ -1915,19 +2246,113 @@ class YayanController:
             "reminder_strength": self.settings.get("reminder_strength", 2),
             "memory_mode": self.settings.get("memory_mode", "graded"),
         }
+        if self.memory_search is not None:
+            try:
+                result["profile_hint"] = self.memory_search.build_context_hint()
+            except Exception:
+                result["profile_hint"] = ""
+        return result
+
+    def manage_memory(self, action):
+        if self.memory_store is None:
+            QMessageBox.information(self.settings_panel, "记忆暂不可用", "本地记忆数据库没有打开，聊天仍可继续。")
+            return
+        memories = self.memory_store.list_active_memories()
+        summary = "\n".join(f"{m['predicate']}：{m['value']}（{m['risk_level']}）" for m in memories) or "目前没有生效记忆。"
+        box = QMessageBox(self.settings_panel)
+        box.setWindowTitle("我的记忆")
+        box.setText(summary)
+        export = box.addButton("导出 JSON", QMessageBox.ActionRole)
+        clear = box.addButton("清空全部", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Close)
+        box.exec_()
+        if box.clickedButton() is export:
+            path = RUNTIME_DIR / "memory-export.json"
+            path.write_text(json.dumps(self.memory_store.export_memories(), ensure_ascii=False, indent=2), encoding="utf-8")
+            QMessageBox.information(self.settings_panel, "已导出", f"记忆已导出到：{path}")
+        elif box.clickedButton() is clear:
+            answer = QMessageBox.question(self.settings_panel, "确认清空", "清空后将无法从记忆检索中召回。继续吗？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes: self.memory_store.clear_memories()
 
     def send_chat(self, text):
+        self.message_generation += 1
+        trace_id = __import__('contracts').make_trace_id()
+        self.user_emotion = self.emotion_service.fast(text, trace_id, self.message_generation)
+        reaction = map_to_pet(self.user_emotion, quiet=self.pet.quiet if hasattr(self, "pet") else False)
+        self.emotion_service.slow(text, trace_id, self.message_generation, self.queue_slow_emotion)
         self.chat_panel.add_message("你", text)
-        self.messages.append({"role": "user", "content": text})
+        if self.conversation is not None:
+            saved = self.conversation.append("user", text)
+            self.messages.append(saved)
+            threading.Thread(target=self.extract_memory_candidates, args=(saved,), daemon=True).start()
+        else:
+            self.messages.append({"role": "user", "content": text})
         self.chat_panel.start_streaming_message()
         self.chat_panel.set_busy(True)
-        self.pet.set_mood("thinking")
+        self.interaction_state = "thinking"
+        self.pet.set_mood(reaction["pet_mood"] if reaction["pet_mood"] != "idle" else "thinking")
         self.pet.say("嗯……让我认真听一下。", 1800)
+        context = self.context()
+        context["trace_id"] = trace_id
+        context["user_emotion"] = {
+            "dominant_emotion": self.user_emotion["dominant_emotion"],
+            "intensity": self.user_emotion["intensity"],
+            "confidence": self.user_emotion["confidence"],
+            "urgency": self.user_emotion["urgency"],
+        }
+        if self.memory_search is not None:
+            try: context["recalled_episodes"] = self.memory_search.search_episodes(text)
+            except Exception: context["recalled_episodes"] = []
         self.start_worker(
             "chat",
             select_recent_messages(self.messages),
-            self.context(),
+            context,
         )
+
+    def slow_emotion_detect(self, text, trace_id, generation):
+        """Ask the configured model for a bounded emotion JSON result."""
+        prompt = (
+            "请只输出 JSON，不要解释。根据用户这句话判断情绪，字段必须为："
+            "dominant_emotion(neutral/joy/sadness/anger/anxiety/surprise/sleepy/shy)、"
+            "intensity(0到1)、confidence(0到1)、pet_empathy(idle/happy/concerned/curious/sleepy/shy)、"
+            "urgency(none/low/medium/high/danger)、expires_in_seconds(整数)、evidence(简短标签)。\n"
+            + str(text)[:1000]
+        )
+        raw = self.client.chat([{"role": "user", "content": prompt}], {"emotion_task": True})
+        payload = json.loads(raw)
+        payload["trace_id"] = trace_id
+        payload["generation"] = generation
+        return payload
+
+    def queue_slow_emotion(self, result):
+        self.pending_slow_emotion = result
+
+    def apply_slow_emotion(self):
+        result = self.pending_slow_emotion
+        if not result or result.get("generation") != self.message_generation:
+            return
+        self.pending_slow_emotion = None
+        self.user_emotion = result
+        reaction = map_to_pet(result, quiet=self.pet.quiet)
+        if reaction["pet_mood"] != "idle" and self.chat_worker is None:
+            self.pet.set_mood(reaction["pet_mood"])
+        if reaction["bubble"] and not self.pet.quiet and self.chat_worker is None:
+            self.pet.say(reaction["bubble"], 2600)
+
+    def extract_memory_candidates(self, message):
+        if self.memory_store is None or self.settings.get("memory_mode", "graded") == "session": return
+        candidates = self.memory_extractor.extract([message])
+        for candidate in candidates:
+            try:
+                count = self.memory_store.upsert_observation(candidate)
+                decision = self.memory_policy.decide(candidate, count - 1)
+                if decision["action"] == "ignore": continue
+                status = "confirmed" if decision["action"] == "confirm" else ("pending" if "confirmation" in decision["action"] else "observed")
+                mid = self.memory_store.create_candidate(candidate, self.conversation.conversation_id, status=status)
+                if status == "pending":
+                    self.memory_store._execute("INSERT INTO memory_actions(id,memory_id,action,actor,reason,created_at) VALUES(?,?,?,?,?,?)", (__import__('uuid').uuid4().hex, mid, "pending", "system", decision["reason"], time.time()))
+            except Exception:
+                continue
 
     def start_worker(self, mode, payload, context=None):
         worker = WorkThread(self.client, mode, payload, context)
@@ -1973,7 +2398,15 @@ class YayanController:
             if worker is not self.chat_worker:
                 return
             self.chat_worker = None
-            self.messages.append({"role": "assistant", "content": result})
+            self.interaction_state = "idle"
+            if self.conversation is not None:
+                saved = self.conversation.append("assistant", result, context_eligible=True, model_used=self.settings.get("llm_model"))
+                self.messages.append(saved)
+                if self.memory_store is not None and result.strip():
+                    try: self.memory_store.add_episode(result[:2000], self.conversation.conversation_id, saved["id"])
+                    except Exception: pass
+            else:
+                self.messages.append({"role": "assistant", "content": result})
             self.chat_panel.finish_streaming_message(result, eligible=True)
             self.chat_panel.set_busy(False)
             self.pet.set_mood("happy")
@@ -1989,7 +2422,12 @@ class YayanController:
     def worker_cancelled(self, worker, mode, partial_text):
         if mode == "chat" and worker is self.chat_worker:
             self.chat_worker = None
+            self.interaction_state = "idle"
             self.chat_panel.finish_streaming_message(stopped=True, eligible=False)
+            if self.conversation is not None and self.chat_panel.messages:
+                msg = self.chat_panel.messages[-1]
+                if msg.get("text"):
+                    self.conversation.append("assistant", msg["text"], context_eligible=False, stopped=True)
             self.chat_panel.set_busy(False)
             self.pet.set_mood("idle")
 
@@ -2114,27 +2552,47 @@ def main():
     app.setApplicationName("芽砚")
     # Every visible surface is a Qt.Tool window, so explicit IPC owns shutdown.
     app.setQuitOnLastWindowClosed(False)
-    log_startup("application-created", render_preview=bool(args.render_preview), quit=args.quit)
+    log_startup(
+        "application-created",
+        render_preview=bool(args.render_preview),
+        quit=args.quit,
+        pid=os.getpid(),
+        interpreter=sys.executable,
+    )
 
     if args.quit:
-        log_startup("quit-request", delivered=send_instance_command("quit"))
-        return 0
+        delivered = send_instance_command("quit")
+        log_startup("quit-request", delivered=delivered)
+        if delivered or not INSTANCE_LOCK_PATH.exists():
+            return 0
+        return 2
 
     instance_lock = None
     if not args.render_preview:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         instance_lock = QLockFile(str(INSTANCE_LOCK_PATH))
         if not instance_lock.tryLock(0):
-            existing_instance = send_instance_command("raise")
+            # A primary process owns the lock before its QLocalServer starts.
+            # Retry briefly so a second launcher does not report a false
+            # failure during that small startup window.
+            existing_instance = False
+            for attempt in range(12):
+                existing_instance = send_instance_command("raise")
+                if existing_instance or attempt == 11:
+                    break
+                time.sleep(0.15)
             log_startup("existing-instance-check", reachable=existing_instance)
             if existing_instance:
                 return 0
-            # A previous process can exit between creating the lock and
-            # registering the IPC server. Let Qt remove the lock only when it
-            # can verify that the recorded owner is no longer running, then
-            # retry once so a stale lock cannot permanently block startup.
-            stale_removed = instance_lock.removeStaleLockFile()
-            log_startup("stale-lock-check", removed=stale_removed)
+            # Qt's stale check can mistake a reused pythonw PID for the
+            # owner. Recover only after a fresh Windows process check proves
+            # that the recorded PID is dead or was created after this lock.
+            verified, reason, fingerprint = inspect_lock(INSTANCE_LOCK_PATH)
+            stale_removed = bool(
+                verified and fingerprint is not None
+                and remove_verified_lock(INSTANCE_LOCK_PATH, fingerprint)
+            )
+            log_startup("stale-lock-check", removed=stale_removed, reason=reason)
             if not stale_removed or not instance_lock.tryLock(0):
                 return 1
 
@@ -2155,8 +2613,12 @@ def main():
     settings = load_json(PROJECT_DIR / "desktop" / "settings.json", {})
     if args.animal:
         settings["default_animal"] = args.animal
+    pet_renderer = resolve_pet_renderer(settings)
     controller = YayanController(app, settings)
+    # active 取控制器的实际渲染器：Godot 不可用时已自动回退为 pyqt。
+    log_startup("pet-renderer", configured=pet_renderer, active=controller.pet_renderer)
     log_startup("controller-visible", visible=controller.pet.isVisible())
+    app.aboutToQuit.connect(controller.shutdown)
 
     def handle_connection():
         socket = server.nextPendingConnection()
@@ -2167,10 +2629,15 @@ def main():
         socket.flush()
         socket.waitForBytesWritten(300)
         if command == "quit":
-            app.quit()
+            # Let the acknowledgement reach the --quit client before the
+            # event loop tears down the local server connection.
+            QTimer.singleShot(50, app.quit)
         else:
-            controller.pet.show()
-            controller.pet.raise_()
+            if controller.pet_renderer == "godot" and controller.pet_bridge is not None:
+                controller.pet_bridge.send_command(make_pet_command("show_window"))
+            else:
+                controller.pet.show()
+                controller.pet.raise_()
 
     server.newConnection.connect(handle_connection)
 

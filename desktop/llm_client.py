@@ -79,6 +79,8 @@ class YayanLLM:
             "interaction_style",
             "reminder_strength",
             "memory_mode",
+            "low_risk_learning",
+            "memory_candidate_prompts",
             "api_key_saved",
         }
         current = {
@@ -144,6 +146,17 @@ class YayanLLM:
         return OpenAI(**options)
 
     @staticmethod
+    def build_memory_context(profile_hint="", recalled_episodes=None):
+        parts = []
+        if profile_hint:
+            parts.append("## 用户长期画像\n只把已确认或低风险已生效的事实当作参考。\n" + str(profile_hint)[:3000])
+        episodes = recalled_episodes or []
+        if episodes:
+            text = "\n".join("- " + str(x.get("text", ""))[:500] for x in episodes[:3])
+            parts.append("## 相关经历\n这些内容来自历史记录，可能过时；与当前问题无关时忽略。\n" + text)
+        return "\n\n".join(parts)
+
+    @staticmethod
     def _collect_chat_stream(stream):
         parts = []
         for chunk in stream:
@@ -181,7 +194,9 @@ class YayanLLM:
             raise ModelUnavailable("请在 YAYAN_LLM_MODEL 中指定要使用的模型。")
 
         context_text = json.dumps(context or {}, ensure_ascii=False, indent=2)
+        memory_text = self.build_memory_context((context or {}).get("profile_hint", ""), (context or {}).get("recalled_episodes", []))
         instructions = f"{self.persona}\n\n## 当前明确上下文\n{context_text}"
+        if memory_text: instructions += "\n\n" + memory_text
         trimmed = select_recent_messages(messages)
         _, api_mode = self._api_config()
 
@@ -217,7 +232,9 @@ class YayanLLM:
             raise ModelUnavailable("请在 YAYAN_LLM_MODEL 中指定要使用的模型。")
 
         context_text = json.dumps(context or {}, ensure_ascii=False, indent=2)
+        memory_text = self.build_memory_context((context or {}).get("profile_hint", ""), (context or {}).get("recalled_episodes", []))
         instructions = f"{self.persona}\n\n## 当前明确上下文\n{context_text}"
+        if memory_text: instructions += "\n\n" + memory_text
         trimmed = select_recent_messages(messages)
         _, api_mode = self._api_config()
         parts = []

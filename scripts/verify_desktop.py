@@ -20,6 +20,17 @@ def verify_syntax():
         PROJECT_DIR / "desktop" / "main.pyw",
         PROJECT_DIR / "desktop" / "llm_client.py",
         PROJECT_DIR / "desktop" / "focus_session.py",
+        PROJECT_DIR / "desktop" / "contracts.py",
+        PROJECT_DIR / "desktop" / "event_bus.py",
+        PROJECT_DIR / "desktop" / "memory_store.py",
+        PROJECT_DIR / "desktop" / "pet_bridge.py",
+        PROJECT_DIR / "desktop" / "memory_policy.py",
+        PROJECT_DIR / "desktop" / "memory_extractor.py",
+        PROJECT_DIR / "desktop" / "memory_search.py",
+        PROJECT_DIR / "desktop" / "conversation_manager.py",
+        PROJECT_DIR / "desktop" / "emotion_rules.py",
+        PROJECT_DIR / "desktop" / "emotion_policy.py",
+        PROJECT_DIR / "desktop" / "emotion_service.py",
     ):
         ast.parse(path.read_text(encoding="utf-8"))
 
@@ -345,6 +356,54 @@ def verify_forced_sse_chat():
     return YayanLLM._collect_chat_stream(stream) == "你好呀"
 
 
+def verify_step1_contracts():
+    from contracts import (
+        make_bridge_message,
+        make_pet_command,
+        validate_bridge_message,
+        validate_candidates_payload,
+        validate_memory_candidate,
+        validate_pet_command,
+    )
+
+    candidate = {
+        "subject": "user",
+        "predicate": "prefers",
+        "value": "晚上工作",
+        "memory_type": "preference",
+        "risk_level": "low",
+        "confidence": 0.86,
+        "evidence_message_id": "msg_123",
+        "expires_at": None,
+    }
+    valid_candidate = validate_memory_candidate(candidate) == []
+    valid_payload = validate_candidates_payload({"candidates": [candidate]}) == []
+    invalid_payload = bool(validate_candidates_payload({"items": []}))
+    command = make_pet_command("set_state", state="concerned", duration_ms=3000)
+    valid_command = validate_pet_command(command) == []
+    invalid_command = bool(validate_pet_command({"command": "fly", "state": "sad"}))
+    envelope = make_bridge_message("pet_command", command)
+    valid_envelope = validate_bridge_message(envelope) == []
+    return (
+        valid_candidate
+        and valid_payload
+        and invalid_payload
+        and valid_command
+        and invalid_command
+        and valid_envelope
+    )
+
+
+def verify_runtime_versions():
+    defaults = json.loads((PROJECT_DIR / "desktop" / "settings.json").read_text(encoding="utf-8"))
+    main_source = (PROJECT_DIR / "desktop" / "main.pyw").read_text(encoding="utf-8")
+    return (
+        defaults.get("runtime_version") == 1
+        and defaults.get("pet_renderer") in ("pyqt", "godot")
+        and "def resolve_pet_renderer(settings)" in main_source
+    )
+
+
 def verify_restart_controls():
     source = (PROJECT_DIR / "desktop" / "main.pyw").read_text(encoding="utf-8")
     required = (
@@ -420,6 +479,8 @@ def main():
         "offline_guard": verify_offline_guard(),
         "tool_window_lifecycle": verify_tool_window_lifecycle(),
         "forced_sse_chat": verify_forced_sse_chat(),
+        "step1_contracts": verify_step1_contracts(),
+        "runtime_versions": verify_runtime_versions(),
         "restart_controls": verify_restart_controls(),
         "audio_failure_routing": verify_audio_failure_routing(),
         "voice_input_setting": verify_voice_input_setting(),
@@ -433,6 +494,10 @@ def main():
     if not result["tool_window_lifecycle"]:
         raise SystemExit(1)
     if not result["forced_sse_chat"]:
+        raise SystemExit(1)
+    if not result["step1_contracts"]:
+        raise SystemExit(1)
+    if not result["runtime_versions"]:
         raise SystemExit(1)
     if not result["restart_controls"]:
         raise SystemExit(1)
