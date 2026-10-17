@@ -1,0 +1,35 @@
+[gd_scene format=3 uid="uid://dx63il1d2gpkq"]
+
+[ext_resource type="Script" uid="uid://bwcdq1l7j2cij" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://cb6u271dmxxtt" path="res://scripts/window_controller.gd" id="2_window"]
+[ext_resource type="Script" uid="uid://0bj6pmywbec0" path="res://scripts/bridge_client.gd" id="3_bridge"]
+[ext_resource type="Script" uid="uid://c7m8dp71xcoa4" path="res://scripts/roam_controller.gd" id="4_roam"]
+[ext_resource type="PackedScene" path="res://scenes/YayanPet.tscn" id="6_pet3d"]
+[ext_resource type="Script" uid="uid://dpnnmqbgnxdht" path="res://scripts/pet_sprite.gd" id="7_petsp"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_pet"]
+size = Vector2(240, 270)
+
+[node name="Main" type="Node2D" unique_id=724994627]
+script = ExtResource("1_main")
+
+[node name="WindowController" type="Node" parent="." unique_id=810273912]
+script = ExtResource("2_window")
+
+[node name="BridgeClient" type="Node" parent="." unique_id=990683125]
+script = ExtResource("3_bridge")
+
+[node name="RoamController" type="Area2D" parent="." unique_id=568630204]
+position = Vector2(60, 110)
+script = ExtResource("4_roam")
+
+[node name="PetSprite" type="AnimatedSprite2D" parent="RoamController" unique_id=1680559146]
+texture_filter = 1
+scale = Vector2(0.8, 0.8)
+script = ExtResource("7_petsp")
+
+[node name="YayanPet3D" parent="RoamController" unique_id=177523606 instance=ExtResource("6_pet3d")]
+position = Vector2(90, 90)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="RoamController" unique_id=1367485111]
+shape = SubResource("RectangleShape2D_pet")
